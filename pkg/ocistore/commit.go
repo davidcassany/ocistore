@@ -220,6 +220,7 @@ func (c *OCIStore) Commit(snapshotKey string, opts ...CommitImgOpt) (_ client.Im
 	}
 
 	c.log.Infof("Successfully committed image '%s'", cimg.Name())
+	// TODO should we run a snapshotter cleanup at this point?
 	return cimg, nil
 }
 

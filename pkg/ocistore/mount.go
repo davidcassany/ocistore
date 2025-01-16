@@ -194,6 +194,7 @@ func (c *OCIStore) Umount(target string, key string, removeSnap int) (retErr err
 	}
 	s := c.cli.SnapshotService(c.driver)
 
+	// TODO should we run a snapshotter cleanup after snapshots removal?
 	// Remove up to a certain level of childs
 	if removeSnap > 0 {
 		return c.removeSnapshotsChain(ctx, s, key, removeSnap-1)
