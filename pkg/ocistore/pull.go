@@ -18,7 +18,6 @@ package ocistore
 
 import (
 	"errors"
-	"reflect"
 
 	"github.com/containerd/containerd/v2/client"
 )
@@ -68,23 +67,6 @@ func (c *OCIStore) Pull(ref string, opts ...PullOpt) (_ client.Image, retErr err
 		}
 	}
 
-	// Ugly hack to filter out WithPullUnpack option
-	// Unpack must be always performed manually by us to ensure consistency
-	var remove bool
-	var i int
-	var o client.RemoteOpt
-	rOpts := pOpt.rOpts
-	for i, o = range rOpts {
-		if reflect.ValueOf(o).Pointer() == reflect.ValueOf(client.WithPullUnpack).Pointer() {
-			c.log.Warn("Requested 'WithPullUnpack' option, ignoring it")
-			remove = true
-			break
-		}
-	}
-	if remove {
-		rOpts = append(rOpts[:i], rOpts[i+1:]...)
-	}
-
 	ctx, done, err := c.cli.WithLease(c.ctx)
 	if err != nil {
 		c.log.Errorf("failed to create lease to pull image: %v", err)
@@ -97,11 +79,12 @@ func (c *OCIStore) Pull(ref string, opts ...PullOpt) (_ client.Image, retErr err
 		}
 	}()
 
-	img, err := c.cli.Pull(ctx, ref, rOpts...)
+	imgSt, err := c.cli.Fetch(ctx, ref, pOpt.rOpts...)
 	if err != nil {
 		c.log.Errorf("failed to pull image '%s': %v", ref, err)
 		return nil, err
 	}
+	img := client.NewImage(c.cli, imgSt)
 	c.log.Infof("Successfully pulled image '%s'", img.Name())
 
 	if pOpt.unpack {
