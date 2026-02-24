@@ -134,6 +134,16 @@ func (c *OCIStore) IsInitiated() bool {
 	return c.ctx != nil
 }
 
+func (c *OCIStore) RunGarbageCollector() error {
+	gcStats, err := c.db.GarbageCollect(c.ctx)
+	if err != nil {
+		return fmt.Errorf("failed to run garbage collection: %w", err)
+	}
+
+	c.log.Debugf("Garbage Collection complete. Elapsed time: %v\n", gcStats.Elapsed())
+	return nil
+}
+
 func (c *OCIStore) GetClient() *client.Client {
 	if !c.IsInitiated() {
 		return nil

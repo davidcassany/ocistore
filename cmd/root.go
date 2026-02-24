@@ -81,11 +81,16 @@ func init() {
 			if cs.IsInitiated() {
 				err := cs.GetClient().SnapshotService(cs.GetDriver()).Close()
 				if err != nil {
-					cs.Logger().Debugf("failed closing snapshotter: %v", err)
+					cs.Logger().Warnf("failed closing snapshotter: %v", err)
 				}
 			}
 		}, func() {
-			//TODO handle garbage collector
+			if cs.IsInitiated() {
+				err := cs.RunGarbageCollector()
+				if err != nil {
+					cs.Logger().Warnf("failed running garbage collector: %v", err)
+				}
+			}
 		},
 	)
 }

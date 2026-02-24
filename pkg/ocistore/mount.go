@@ -87,7 +87,7 @@ func (c *OCIStore) Mount(img client.Image, target string, key string, readonly b
 	// TODO handle lease properly, whats the purpose of this setup?
 	ctx, done, err := c.cli.WithLease(c.ctx,
 		leases.WithID(key),
-		leases.WithExpiration(24*time.Hour),
+		leases.WithExpiration(1*time.Hour),
 		leases.WithLabel("containerd.io/gc.ref.snapshot."+c.driver, key),
 	)
 	if err != nil && !errdefs.IsAlreadyExists(err) {
@@ -177,7 +177,7 @@ func (c *OCIStore) Umount(target string, key string, removeSnap int) (retErr err
 		return nil
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to umount snapshot: %v", err)
 		return err

@@ -19,9 +19,11 @@ package ocistore
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/opencontainers/image-spec/identity"
 )
 
@@ -56,7 +58,7 @@ func (c *OCIStore) Delete(name string, opts ...images.DeleteOpt) (retErr error) 
 		return errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to delete image: %v", err)
 		return err
@@ -83,7 +85,7 @@ func (c *OCIStore) Update(img images.Image, fieldpaths ...string) (_ client.Imag
 		return nil, errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to update image: %v", err)
 		return nil, err
@@ -108,7 +110,7 @@ func (c *OCIStore) Create(img images.Image) (_ client.Image, retErr error) {
 		return nil, errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to create image: %v", err)
 		return nil, err

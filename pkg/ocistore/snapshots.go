@@ -20,7 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/errdefs"
 )
@@ -30,7 +32,7 @@ func (c *OCIStore) ListSnapshots(filters ...string) (_ []snapshots.Info, retErr 
 		return nil, errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to list snapshots: %v", err)
 		return nil, err
@@ -59,7 +61,7 @@ func (c *OCIStore) GetSnapshot(key string) (_ snapshots.Info, retErr error) {
 		return info, errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to get snapshot: %v", err)
 		return info, err
@@ -80,7 +82,7 @@ func (c *OCIStore) UpdateSnapshot(info snapshots.Info, fieldpaths ...string) (_ 
 		return info, errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to update snapshot: %v", err)
 		return info, err
@@ -107,7 +109,7 @@ func (c *OCIStore) LabelSnapshot(name string, labels map[string]string) (retErr 
 		return errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to get snapshot: %v", err)
 		return err
@@ -140,7 +142,7 @@ func (c *OCIStore) RemoveSnapshotLabels(name string, labelKeys ...string) (retEr
 		return errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to get snapshot: %v", err)
 		return err

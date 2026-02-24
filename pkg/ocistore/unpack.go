@@ -19,10 +19,12 @@ package ocistore
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/diff"
 	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/containerd/v2/core/unpack"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -33,7 +35,7 @@ func (c *OCIStore) Unpack(img client.Image, opts ...ApplyCommitOpt) (retErr erro
 		return errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease for unpacking '%s': %v", img.Name(), err)
 		return err

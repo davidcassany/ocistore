@@ -50,6 +50,7 @@ func NewExtractor(ctx context.Context, log logger.Logger) Extractor {
 }
 
 func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local bool, verify bool) (string, error) {
+	// TODO verify it handles authorization
 	resolver := docker.NewResolver(docker.ResolverOptions{})
 
 	name, desc, err := resolver.Resolve(e.ctx, imageRef)

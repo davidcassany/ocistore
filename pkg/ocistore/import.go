@@ -22,8 +22,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/leases"
 )
 
 type ImportOpts struct {
@@ -60,7 +62,7 @@ func (c *OCIStore) Import(reader io.Reader, opts ...ImportOpt) (_ []client.Image
 		return nil, errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to import image: %v", err)
 		return nil, err
@@ -86,7 +88,7 @@ func (c *OCIStore) ImportFile(file string, opts ...ImportOpt) (_ []client.Image,
 		return nil, errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to import image: %v", err)
 		return nil, err
@@ -113,7 +115,7 @@ func (c *OCIStore) SingleImportFile(file string, opts ...ImportOpt) (_ client.Im
 		return nil, errors.New(missInitErrMsg)
 	}
 
-	ctx, done, err := c.cli.WithLease(c.ctx)
+	ctx, done, err := c.cli.WithLease(c.ctx, leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
 		c.log.Errorf("failed to create lease to import image: %v", err)
 		return nil, err
