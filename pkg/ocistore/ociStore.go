@@ -67,8 +67,8 @@ type OCIStore struct {
 	cli *client.Client
 }
 
-func NewOCIStore(log logger.Logger, root string) OCIStore {
-	return OCIStore{
+func NewOCIStore(log logger.Logger, root string) *OCIStore {
+	return &OCIStore{
 		root: root, driver: overlayDriver, namespace: namespace,
 		log: log, platform: platforms.DefaultStrict(),
 	}

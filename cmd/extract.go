@@ -20,22 +20,28 @@ import (
 	"context"
 
 	"github.com/davidcassany/ocistore/pkg/extractor"
-	"github.com/davidcassany/ocistore/pkg/logger"
 	"github.com/spf13/cobra"
 )
+
+func initExtractorLogger(cmd *cobra.Command, args []string) error {
+	flags := cmd.Flags()
+	llvl, _ := flags.GetString("loglevel")
+	debug, _ := flags.GetBool("debug")
+	log = initLogger(debug, llvl)
+	return nil
+}
 
 // pullCmd represents the pull command
 var extractCmd = &cobra.Command{
 	Use:     "extract IMAGE_REF DESTINATION",
 	Short:   "pulls a remote image and extracts its flattened root tree to destination folder",
 	Args:    cobra.ExactArgs(2),
-	PreRunE: initCS,
+	PreRunE: initExtractorLogger,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ref := args[0]
 		dst := args[1]
-		log, _ := logger.NewLogger(logger.InfoLevel)
-		extract := extractor.NewExtractor(context.Background(), log)
 
+		extract := extractor.NewExtractor(context.Background(), log)
 		_, err := extract.ExtractImage(ref, dst, "", false, false)
 		return err
 	},

@@ -65,7 +65,6 @@ func (c *OCIStore) RemoteUnpack(ref string, opts ...ApplyCommitOpt) (err error) 
 	}()
 
 	// TODO verify it handles authorization
-	//registryHosts := docker.ConfigureDefaultRegistries()
 	resolver := docker.NewResolver(docker.ResolverOptions{})
 
 	name, desc, err := resolver.Resolve(c.ctx, ref)
@@ -190,7 +189,7 @@ func remoteChildren(log logger.Logger, store content.Store, fetcher remotes.Fetc
 // This is strictly used for the small non-layer blobs (Manifest and Config).
 func fetchAndStoreMetadata(ctx context.Context, fetcher remotes.Fetcher, store content.Store, desc ocispec.Descriptor, metadata any) error {
 	// Fetch from the registry
-	metadataBytes, err := fetchMetadata(ctx, fetcher, desc)
+	metadataBytes, err := FetchMetadata(ctx, fetcher, desc)
 	if err != nil {
 		return nil
 	}
@@ -213,7 +212,7 @@ func fetchAndStoreMetadata(ctx context.Context, fetcher remotes.Fetcher, store c
 
 // fetchMetadata uses the fetcher to grab a blob and returns blob bytes.
 // This is strictly used for the small non-layer blobs (Manifest and Config).
-func fetchMetadata(ctx context.Context, fetcher remotes.Fetcher, desc ocispec.Descriptor) (metadata []byte, err error) {
+func FetchMetadata(ctx context.Context, fetcher remotes.Fetcher, desc ocispec.Descriptor) (metadata []byte, err error) {
 	// Fetch from the registry
 	rc, err := fetcher.Fetch(ctx, desc)
 	if err != nil {

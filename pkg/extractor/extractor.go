@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/core/remotes"
@@ -29,15 +28,11 @@ import (
 	"github.com/containerd/containerd/v2/pkg/archive/compression"
 	"github.com/containerd/platforms"
 	"github.com/davidcassany/ocistore/pkg/logger"
+	"github.com/davidcassany/ocistore/pkg/ocistore"
+	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/identity"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"golang.org/x/sync/semaphore"
 )
-
-const maxConcurrentDownloads = 1
-
-type ImageExtractor interface {
-	ExtractImage(imageRef, destination, platformRef string, local bool, verify bool) (string, error)
-}
 
 type Extractor struct {
 	ctx      context.Context
@@ -47,6 +42,11 @@ type Extractor struct {
 
 func NewExtractor(ctx context.Context, log logger.Logger) Extractor {
 	return Extractor{log: log, platform: platforms.DefaultStrict(), ctx: ctx}
+}
+
+type metadata struct {
+	mfst *ocispec.Manifest
+	conf *ocispec.Image
 }
 
 func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local bool, verify bool) (string, error) {
@@ -61,96 +61,118 @@ func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local
 
 	fetcher, err := resolver.Fetcher(e.ctx, name)
 	if err != nil {
-		e.log.Errorf("failed to set a fetcher for the resolved name '%s': %v", name, err)
-		return "", err
+		return "", fmt.Errorf("initiating fetcher for image %s: %w", name, err)
 	}
 
 	var (
 		handler images.Handler
-		//		isConvertible         bool
-		//		originalSchema1Digest string
-		//		converterFunc         func(context.Context, ocispec.Descriptor) (ocispec.Descriptor, error)
-		limiter *semaphore.Weighted
+		imgMeta metadata
 	)
 
-	limiter = semaphore.NewWeighted(int64(maxConcurrentDownloads))
+	handler = images.Handlers(images.FilterPlatforms(
+		fetchManifestAndConfig(e.log, fetcher, &imgMeta),
+		e.platform),
+	)
 
-	/*
-		1. children
-		2. filter platform
-		3. fetch
-	*/
+	if err := images.Dispatch(e.ctx, handler, nil, desc); err != nil {
+		return "", fmt.Errorf("failed on image dispatch: %w", err)
+	}
 
-	/*if desc.MediaType == images.MediaTypeDockerSchema1Manifest && rCtx.ConvertSchema1 {
+	if imgMeta.mfst == nil || imgMeta.conf == nil {
+		return "", fmt.Errorf("failed to find manifest and image config")
+	}
 
-	} else {*/
+	diffIDs := imgMeta.conf.RootFS.DiffIDs
+	chainIDs := make([]digest.Digest, len(diffIDs))
+	copy(chainIDs, diffIDs)
+	chainIDs = identity.ChainIDs(chainIDs)
 
-	handler = images.Handlers(images.FilterPlatforms(fetchHandler(e.log, fetcher, destination), e.platform))
-	//}
+	for _, layerDesc := range imgMeta.mfst.Layers {
+		rc, err := fetcher.Fetch(e.ctx, layerDesc)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch layer %s: %w", layerDesc.Digest, err)
+		}
+		//var uncompressedStream io.ReadCloser
+		uncompressedStream, err := compression.DecompressStream(rc)
+		if err != nil {
+			return "", err
+		}
 
-	if err := images.Dispatch(e.ctx, handler, limiter, desc); err != nil {
-		e.log.Errorf("failed on image dispatch: %v", err)
-		return "", err
+		// TODO handle whiteouts in some special way?
+		opts := []archive.ApplyOpt{}
+		_, err = archive.Apply(e.ctx, destination, uncompressedStream, opts...)
+		uErr := uncompressedStream.Close()
+		if err == nil && uErr != nil {
+			err = uErr
+		}
+		cErr := rc.Close()
+		if err == nil && cErr != nil {
+			err = cErr
+		}
+		if err != nil {
+			return "", fmt.Errorf("failed to apply layer %s: %w", layerDesc.Digest, err)
+		}
 	}
 
 	return string(desc.Digest), nil
 }
 
-func fetchHandler(log logger.Logger, fetcher remotes.Fetcher, root string) images.HandlerFunc {
+func fetchManifestAndConfig(log logger.Logger, fetcher remotes.Fetcher, metadata *metadata) images.HandlerFunc {
 	return func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
-		log.Infof("digest: %s", desc.Digest.String())
-		log.Infof("mediatype: %s", desc.MediaType)
-		log.Infof("size: %d", desc.Size)
-
-		if desc.MediaType == images.MediaTypeDockerSchema1Manifest {
-			return nil, fmt.Errorf("%v not supported", desc.MediaType)
-		}
-		return fetch(ctx, fetcher, desc, root)
-	}
-}
-
-// fetch fetches the given digest into the provided ingester
-func fetch(ctx context.Context, fetcher remotes.Fetcher, desc ocispec.Descriptor, root string) ([]ocispec.Descriptor, error) {
-
-	rc, err := fetcher.Fetch(ctx, desc)
-	if err != nil {
-		return nil, err
-	}
-	defer rc.Close()
-
-	if images.IsLayerType(desc.MediaType) {
-		urc, err := compression.DecompressStream(rc)
-		if err != nil {
-			return nil, err
-		}
-		_, err = archive.Apply(ctx, root, urc) // which options?
-		return nil, err
-	} else if images.IsManifestType(desc.MediaType) || images.IsIndexType(desc.MediaType) {
-		var data []byte
-		if desc.Size == int64(len(desc.Data)) {
-			data = desc.Data
-		} else {
-			data, err = io.ReadAll(rc)
+		switch {
+		case images.IsDockerType(desc.MediaType):
+			return nil, fmt.Errorf("%s media type not supported", desc.MediaType)
+		case images.IsIndexType(desc.MediaType):
+			var index ocispec.Index
+			metadataBytes, err := ocistore.FetchMetadata(ctx, fetcher, desc)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed fetching index: %w", err)
 			}
-		}
-		if images.IsManifestType(desc.MediaType) {
+			if err := json.Unmarshal(metadataBytes, &index); err != nil {
+				return nil, fmt.Errorf("unmarshalling index error: %w", err)
+			}
+			log.Debugf("Fetched index manifest with digest: %s", desc.Digest)
+			return append([]ocispec.Descriptor{}, index.Manifests...), nil
+		case images.IsManifestType(desc.MediaType):
+			if metadata.mfst != nil {
+				return nil, fmt.Errorf("manifest already defined, there can only be one")
+			}
+			metadataBytes, err := ocistore.FetchMetadata(ctx, fetcher, desc)
+			if err != nil {
+				return nil, fmt.Errorf("failed fetching manifest: %w", err)
+			}
+
 			var manifest ocispec.Manifest
-			if err := json.Unmarshal(data, &manifest); err != nil {
-				return nil, err
+			if err := json.Unmarshal(metadataBytes, &manifest); err != nil {
+				return nil, fmt.Errorf("unmarshalling manifest error: %w", err)
 			}
+			metadata.mfst = &manifest
+
+			log.Debugf("Fetched image manifest with digest: %s", desc.Digest)
 			return append([]ocispec.Descriptor{manifest.Config}, manifest.Layers...), nil
-		}
-		var index ocispec.Index
-		if err := json.Unmarshal(desc.Data, &index); err != nil {
-			return nil, err
-		}
+		case images.IsConfigType(desc.MediaType):
+			if metadata.conf != nil {
+				return nil, fmt.Errorf("config is not zero, there can only be one")
+			}
 
-		return append([]ocispec.Descriptor{}, index.Manifests...), nil
-	} else if !images.IsKnownConfig(desc.MediaType) {
-		// Log unknown config
+			metadataBytes, err := ocistore.FetchMetadata(ctx, fetcher, desc)
+			if err != nil {
+				return nil, fmt.Errorf("failed fetching manifest: %w", err)
+			}
+
+			var config ocispec.Image
+			if err := json.Unmarshal(metadataBytes, &config); err != nil {
+				return nil, fmt.Errorf("unmarshalling config error: %w", err)
+			}
+
+			metadata.conf = &config
+			log.Debugf("Fetched image config with digest: %s", desc.Digest)
+			return nil, nil
+		case images.IsLayerType(desc.MediaType):
+			log.Debugf("encountered a layer type, not fetching it")
+		default:
+			log.Debugf("encountered unknown type %v; children may not be fetched", desc.MediaType)
+		}
+		return nil, nil
 	}
-
-	return nil, nil
 }
