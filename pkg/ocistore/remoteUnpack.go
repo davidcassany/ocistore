@@ -18,12 +18,12 @@ package ocistore
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -36,10 +36,12 @@ import (
 	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/containerd/v2/pkg/archive"
+	"github.com/containerd/containerd/v2/pkg/archive/compression"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
+	"github.com/containerd/stargz-snapshotter/estargz"
+	"github.com/containerd/stargz-snapshotter/estargz/zstdchunked"
 	"github.com/davidcassany/ocistore/pkg/logger"
-	"github.com/klauspost/compress/zstd"
 	"github.com/moby/sys/userns"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
@@ -65,7 +67,7 @@ func (c *OCIStore) RemoteUnpack(ref string, opts ...ApplyCommitOpt) (err error) 
 	}()
 
 	// TODO verify it handles authorization
-	resolver := docker.NewResolver(docker.ResolverOptions{})
+	resolver := setupResolver()
 
 	name, desc, err := resolver.Resolve(c.ctx, ref)
 	if err != nil {
@@ -124,7 +126,6 @@ func (c *OCIStore) RemoteUnpack(ref string, opts ...ApplyCommitOpt) (err error) 
 	if err != nil {
 		return fmt.Errorf("could not retrieve manifest from store: %w", err)
 	}
-	c.log.Debugf("manifest labels: %v", mfst.Annotations)
 
 	diffIDs, err := images.RootFS(ctx, c.cli.ContentStore(), mfst.Config)
 	if err != nil {
@@ -132,7 +133,7 @@ func (c *OCIStore) RemoteUnpack(ref string, opts ...ApplyCommitOpt) (err error) 
 	}
 	sn := c.cli.SnapshotService(c.driver)
 
-	err = unpackRemoteLayers(ctx, fetcher, sn, mfst, diffIDs)
+	err = unpackRemoteLayers(ctx, c.log, fetcher, sn, mfst, diffIDs)
 	if err != nil {
 		return fmt.Errorf("could not unpack layers: %w", err)
 	}
@@ -210,7 +211,7 @@ func fetchAndStoreMetadata(ctx context.Context, fetcher remotes.Fetcher, store c
 	return nil
 }
 
-// fetchMetadata uses the fetcher to grab a blob and returns blob bytes.
+// FetchMetadata uses the fetcher to grab a blob and returns blob bytes.
 // This is strictly used for the small non-layer blobs (Manifest and Config).
 func FetchMetadata(ctx context.Context, fetcher remotes.Fetcher, desc ocispec.Descriptor) (metadata []byte, err error) {
 	// Fetch from the registry
@@ -232,10 +233,7 @@ func FetchMetadata(ctx context.Context, fetcher remotes.Fetcher, desc ocispec.De
 	return b, nil
 }
 
-func unpackRemoteLayers(ctx context.Context, fetcher remotes.Fetcher, sn snapshots.Snapshotter, manifest ocispec.Manifest, diffIDs []digest.Digest) (err error) {
-	//var parentChainID digest.Digest
-	//var currentChainID digest.Digest
-
+func unpackRemoteLayers(ctx context.Context, log logger.Logger, fetcher remotes.Fetcher, sn snapshots.Snapshotter, manifest ocispec.Manifest, diffIDs []digest.Digest) (err error) {
 	chainIDs := make([]digest.Digest, len(diffIDs))
 	copy(chainIDs, diffIDs)
 	chainIDs = identity.ChainIDs(chainIDs)
@@ -261,6 +259,12 @@ func unpackRemoteLayers(ctx context.Context, fetcher remotes.Fetcher, sn snapsho
 			return fmt.Errorf("failed to prepare snapshot: %w", err)
 		}
 
+		// fetch TOC for zstd:chunked formatted layers
+		_, _, err = fetchZstdTOC(ctx, log, layerDesc, fetcher)
+		if err != nil {
+			log.Warnf("could not fetch zstd:chunked's TOC, skip TOC fetch: %v", err)
+		}
+
 		// 6. Fetch the compressed layer blob directly from the network
 		rc, err := fetcher.Fetch(ctx, layerDesc)
 		if err != nil {
@@ -268,27 +272,9 @@ func unpackRemoteLayers(ctx context.Context, fetcher remotes.Fetcher, sn snapsho
 			return fmt.Errorf("failed to fetch layer %s: %w", layerDesc.Digest, err)
 		}
 
-		var uncompressedStream io.ReadCloser
-
-		switch layerDesc.MediaType {
-		case ocispec.MediaTypeImageLayerZstd:
-			dec, err := zstd.NewReader(rc)
-			if err != nil {
-				rc.Close()
-				return err
-			}
-			uncompressedStream = readCloser{
-				Reader: dec,
-				close:  dec.Close,
-			}
-		case ocispec.MediaTypeImageLayerGzip:
-			uncompressedStream, err = gzip.NewReader(rc)
-			if err != nil {
-				rc.Close()
-				return err
-			}
-		default:
-			return fmt.Errorf("unexpected layer media type: %s", layerDesc.MediaType)
+		uncompressedStream, err := compression.DecompressStream(rc)
+		if err != nil {
+			return fmt.Errorf("setting the uncompressed stream reader: %w", err)
 		}
 
 		// 7. Apply the tar stream directly to the snapshotter's mounts
@@ -333,6 +319,163 @@ func (r readCloser) Close() error {
 	r.close()
 	return nil
 }
+
+// Define a custom type for our context key to avoid collisions
+type rangeContextKey struct{}
+
+// rangeTarget holds the instructions for our RoundTripper
+type rangeTarget struct {
+	Digest string
+	Offset int64
+	Length int64
+}
+
+// rangeRoundTripper intercepts requests and injects the Range header
+type rangeRoundTripper struct {
+	Base http.RoundTripper
+}
+
+func (rt *rangeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Check if the range target instructions are in the context
+	target, ok := req.Context().Value(rangeContextKey{}).(rangeTarget)
+	if !ok {
+		// Not our target, proceed normally
+		return rt.Base.RoundTrip(req)
+	}
+
+	// Check the request is a GET method including the Digest we want to fetch, then
+	// assume this the request we want to intercept and recreate
+	if strings.Contains(req.URL.Path, target.Digest) && req.Method == http.MethodGet {
+		clonedReq := req.Clone(req.Context())
+		bRange := fmt.Sprintf("bytes=%d-%d", target.Offset, target.Offset+target.Length-1)
+		clonedReq.Header.Set("Range", bRange)
+		return rt.Base.RoundTrip(clonedReq)
+	}
+	return rt.Base.RoundTrip(req)
+}
+
+// setupResolver creates a new resolver with a custom http client with the http.RoundTripper
+// to support ranged http requests.
+// TODO: expose resolver configuration options as optional parametres
+func setupResolver() remotes.Resolver {
+	customClient := &http.Client{
+		Transport: &rangeRoundTripper{
+			Base: http.DefaultTransport,
+		},
+	}
+
+	// Initialize the resolver with our customized client
+	opts := docker.ResolverOptions{
+		Client: customClient,
+		// You can also add your registry hosts / auth configurations here
+		// TODO: I don't know why adding this causes to ignore the custom client
+		//Hosts: docker.ConfigureDefaultRegistries(),
+	}
+
+	return docker.NewResolver(opts)
+}
+
+func fetchRange(ctx context.Context, fetcher remotes.Fetcher, desc ocispec.Descriptor, offset int64, length int64) (io.ReadCloser, error) {
+	/*fetcher, err := resolver.Fetcher(ctx, ref)
+	if err != nil {
+		return nil, err
+	}*/
+
+	target := rangeTarget{
+		Digest: desc.Digest.Encoded(),
+		Offset: offset,
+		Length: length,
+	}
+	ctxWithRange := context.WithValue(ctx, rangeContextKey{}, target)
+
+	rc, err := fetcher.Fetch(ctxWithRange, desc)
+	if err != nil {
+		return nil, err
+	}
+
+	return rc, nil
+}
+
+func uncompressBytes(tocBytes []byte) ([]byte, error) {
+	decoder, err := compression.DecompressStream(bytes.NewReader(tocBytes))
+	if err != nil {
+		return nil, fmt.Errorf("decoding TOC bytes: %w", err)
+	}
+	defer decoder.Close()
+
+	uncompressedTOC, err := io.ReadAll(decoder)
+	if err != nil {
+		return nil, fmt.Errorf("reading decompressed TOC: %w", err)
+	}
+
+	return uncompressedTOC, nil
+}
+
+// TODO ensure the fetcher includes our custom RoundTripper, probably define our own type alias for the fetcher
+func fetchZstdTOC(ctx context.Context, log logger.Logger, layerDesc ocispec.Descriptor, fetcher remotes.Fetcher) (*estargz.JTOC, digest.Digest, error) {
+	var tocDgst digest.Digest
+
+	if layerDesc.MediaType != ocispec.MediaTypeImageLayerZstd {
+		// We do nothing if the layer is not of zstd type
+		log.Debugf("%s is not a zstd layer, no TOC to fecth", layerDesc.Digest.String())
+		return nil, tocDgst, nil
+	}
+
+	if val, ok := layerDesc.Annotations[zstdchunked.ManifestChecksumAnnotation]; ok {
+		log.Debugf("annotation points to zstd:chunked format. Checksum: %s", val)
+	}
+
+	decompressor := new(zstdchunked.Decompressor)
+	footerSize := decompressor.FooterSize()
+
+	rc, err := fetchRange(ctx, fetcher, layerDesc, layerDesc.Size-footerSize, footerSize)
+	if err != nil {
+		return nil, tocDgst, fmt.Errorf("fetching blob footer: %w", err)
+	}
+	footerBytes, err := io.ReadAll(rc)
+	cErr := rc.Close()
+	if err != nil {
+		return nil, tocDgst, fmt.Errorf("reading zstd footer bytes: %w", err)
+	}
+	if cErr != nil {
+		return nil, tocDgst, fmt.Errorf("closing footer reader: %w", err)
+	}
+
+	_, tocOff, tocSize, err := decompressor.ParseFooter(footerBytes)
+	if err != nil {
+		// We assume this is not of zstd:chunked type and process normally
+		log.Debugf("could not parse zstd TOC from footer: %w", err)
+		return nil, tocDgst, nil
+	}
+
+	if tocSize <= 0 {
+		log.Warnf("inconsistent TOC size (%d) detected, ignoring TOC", tocSize)
+		return nil, tocDgst, nil
+	}
+
+	rc, err = fetchRange(ctx, fetcher, layerDesc, tocOff, tocSize)
+	if err != nil {
+		return nil, tocDgst, fmt.Errorf("fetching TOC: %w", err)
+	}
+
+	toc, tocDgst, err := decompressor.ParseTOC(rc)
+	cErr = rc.Close()
+	if err != nil {
+		return nil, tocDgst, fmt.Errorf("decompressing TOC: %w", err)
+	}
+	if cErr != nil {
+		return nil, tocDgst, fmt.Errorf("closing TOC reader: %w", err)
+	}
+	log.Debugf("uncompressed TOC with %d entries and digest %s", len(toc.Entries), tocDgst.String())
+
+	return toc, tocDgst, nil
+}
+
+// From here up to the and of the file the code is copied form containerd
+// https://github.com/containerd/containerd/blob/main/core/diff/apply/apply_linux.go
+// There is no public differ API to apply changes from a Reader. In fact this is just
+// a small wrapper around archive.Apply which is public, this handles some specific corner
+// cases which are related to the underlaying differ and snapshotter.
 
 func applyUnix(ctx context.Context, mounts []mount.Mount, r io.Reader, sync bool) (retErr error) {
 	switch {

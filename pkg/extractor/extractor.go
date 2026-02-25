@@ -92,7 +92,7 @@ func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local
 		if err != nil {
 			return "", fmt.Errorf("failed to fetch layer %s: %w", layerDesc.Digest, err)
 		}
-		//var uncompressedStream io.ReadCloser
+
 		uncompressedStream, err := compression.DecompressStream(rc)
 		if err != nil {
 			return "", err

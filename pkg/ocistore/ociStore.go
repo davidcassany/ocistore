@@ -51,6 +51,13 @@ const (
 	LabelSnapshotImgRef = "containerd.io/snapshot/image.ref"
 
 	missInitErrMsg = "uninitiated containerdstore instance"
+
+	// TopLevelBucket isolates our custom data from containerd's bucket
+	// we don't want to mess with containerd's DB and potentially corrupt it or break
+	// containerd updates
+	TopLevelBucket      = "zstd-cache"
+	ChunkLocBucket      = "chunk-locations"
+	SnapshotChunkBucket = "snapshot-chunks"
 )
 
 type OCIStore struct {
@@ -64,6 +71,7 @@ type OCIStore struct {
 
 	ctx context.Context
 	db  *metadata.DB
+	bdb *bolt.DB
 	cli *client.Client
 }
 
@@ -124,9 +132,16 @@ func (c *OCIStore) Init(mainCtx context.Context) error {
 		return err
 	}
 
+	// Init our zstd:chunked cache database
+	err = initZstdCacheBuckets(bdb)
+	if err != nil {
+		return err
+	}
+
 	c.ctx = ctx
 	c.db = db
 	c.cli = cli
+	c.bdb = bdb
 	return nil
 }
 
@@ -194,6 +209,28 @@ func ReadIndex(ctx context.Context, img client.Image) (*ocispec.Index, *ocispec.
 	}
 
 	return &idx, &desc, nil
+}
+
+func initZstdCacheBuckets(db *bolt.DB) error {
+	return db.Update(func(tx *bolt.Tx) error {
+		// 1. Create our isolated top-level root bucket
+		root, err := tx.CreateBucketIfNotExists([]byte(TopLevelBucket))
+		if err != nil {
+			return fmt.Errorf("failed to create root cache bucket: %w", err)
+		}
+
+		// 2. Create the Forward Index (Chunk Digest -> Paths)
+		if _, err := root.CreateBucketIfNotExists([]byte(ChunkLocBucket)); err != nil {
+			return fmt.Errorf("failed to create chunk locations bucket: %w", err)
+		}
+
+		// 3. Create the Reverse Index (Snapshot ID -> Chunk Digests)
+		if _, err := root.CreateBucketIfNotExists([]byte(SnapshotChunkBucket)); err != nil {
+			return fmt.Errorf("failed to create snapshot chunks bucket: %w", err)
+		}
+
+		return nil
+	})
 }
 
 // ReadManifest returns the manifest for img.platform, or nil if no manifest was found.
