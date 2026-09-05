@@ -1,6 +1,9 @@
 package filedb_test
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -156,5 +159,84 @@ func TestRemoveRoot_allRoots_clearsAllDigests(t *testing.T) {
 	}
 	if len(paths) != 0 {
 		t.Errorf("expected digest to be fully GC'd, got %v", paths)
+	}
+}
+
+func sha256digest(data []byte) string {
+	h := sha256.Sum256(data)
+	return fmt.Sprintf("sha256:%x", h)
+}
+
+func TestScanRoot(t *testing.T) {
+	dir := t.TempDir()
+
+	files := map[string][]byte{
+		"file1.txt":        []byte("hello world"),
+		"subdir/file2.txt": []byte("nested content"),
+	}
+	for rel, data := range files {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// empty file and symlink must be skipped
+	os.WriteFile(filepath.Join(dir, "empty.txt"), []byte{}, 0o644)
+	os.Symlink("file1.txt", filepath.Join(dir, "link.txt"))
+
+	entries, err := filedb.ScanRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != len(files) {
+		t.Fatalf("expected %d entries, got %d", len(files), len(entries))
+	}
+
+	got := map[string]string{}
+	for _, e := range entries {
+		for _, rp := range e.RelPaths() {
+			got[rp] = e.Digest()
+		}
+	}
+	for rel, data := range files {
+		want := sha256digest(data)
+		if got[rel] != want {
+			t.Errorf("%q: got digest %q, want %q", rel, got[rel], want)
+		}
+	}
+}
+
+func TestScanRoot_integratesWithStagedCommit(t *testing.T) {
+	dir := t.TempDir()
+
+	content := []byte("some file content")
+	if err := os.MkdirAll(filepath.Join(dir, "usr/bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "usr/bin/tool"), content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := filedb.ScanRoot(dir)
+	if err != nil {
+		t.Fatalf("ScanRoot: %v", err)
+	}
+
+	db := openTemp(t)
+	if err := db.RecordAll(dir, entries); err != nil {
+		t.Fatalf("RecordAll: %v", err)
+	}
+
+	digest := sha256digest(content)
+	paths, err := db.PathsForChecksum(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(dir, "usr/bin/tool")}
+	if !slices.Equal(paths, want) {
+		t.Errorf("PathsForChecksum after ScanRoot+CommitRoot: got %v, want %v", paths, want)
 	}
 }

@@ -90,7 +90,7 @@ type metadata struct {
 
 type layerCtx struct {
 	// seenPaths collects already applied paths, if for a given key path it
-	// is set to false false it is assumed this is not an applied path
+	// is set to false it is assumed this is not an applied path
 	seenPaths map[string]bool
 
 	// whiteouts collects all whiteouts, opaque or not, if for a given key path
