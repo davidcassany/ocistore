@@ -27,6 +27,7 @@ import (
 var (
 	bktChecksums = []byte("checksums")
 	bktRoots     = []byte("roots")
+	bktStaging   = []byte("staging")
 )
 
 // DB is the extraction-tracking store.
@@ -56,11 +57,12 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("opening filedb: %w", err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		if _, err := tx.CreateBucketIfNotExists(bktChecksums); err != nil {
-			return err
+		for _, b := range [][]byte{bktChecksums, bktRoots, bktStaging} {
+			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
+				return err
+			}
 		}
-		_, err := tx.CreateBucketIfNotExists(bktRoots)
-		return err
+		return nil
 	}); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initializing filedb: %w", err)
@@ -182,5 +184,91 @@ func (d *DB) RemoveRoot(root string) error {
 		}
 
 		return rb.DeleteBucket([]byte(root))
+	})
+}
+
+// RecordAllStaged records entries under a staging ID without touching the
+// checksums bucket. Call CommitRoot to promote a staged set to its final root,
+// writing the checksums entries only at that point.
+// Entries with an empty Digest are silently skipped.
+func (d *DB) RecordAllStaged(stagingID string, entries []Entry) error {
+	return d.db.Update(func(tx *bolt.Tx) error {
+		ssb, err := tx.Bucket(bktStaging).CreateBucketIfNotExists([]byte(stagingID))
+		if err != nil {
+			return fmt.Errorf("creating staging bucket for %s: %w", stagingID, err)
+		}
+		for _, e := range entries {
+			if e.Digest() == "" {
+				continue
+			}
+			for _, rp := range e.RelPaths() {
+				if rp == "" {
+					continue
+				}
+				if err := ssb.Put([]byte(rp), []byte(e.Digest())); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// CommitRoot promotes a staging set to its final root in one transaction:
+// it writes all staged relPath→digest entries into roots/<finalRoot> and
+// their absolute paths into checksums/<digest>/, then drops the staging bucket.
+// Returns an error if stagingID does not exist or finalRoot is already tracked.
+func (d *DB) CommitRoot(stagingID, finalRoot string) error {
+	return d.db.Update(func(tx *bolt.Tx) error {
+		stb := tx.Bucket(bktStaging)
+		ssb := stb.Bucket([]byte(stagingID))
+		if ssb == nil {
+			return fmt.Errorf("staging %q not found", stagingID)
+		}
+
+		rb := tx.Bucket(bktRoots)
+		rsb, err := rb.CreateBucket([]byte(finalRoot))
+		if err != nil {
+			return fmt.Errorf("creating root bucket for %s: %w", finalRoot, err)
+		}
+
+		cb := tx.Bucket(bktChecksums)
+		if err := ssb.ForEach(func(relPath, digest []byte) error {
+			csb, err := cb.CreateBucketIfNotExists(digest)
+			if err != nil {
+				return fmt.Errorf("creating checksum bucket for %s: %w", string(digest), err)
+			}
+			absPath := []byte(filepath.Join(finalRoot, string(relPath)))
+			if err := csb.Put(absPath, nil); err != nil {
+				return err
+			}
+			return rsb.Put(relPath, digest)
+		}); err != nil {
+			return err
+		}
+
+		return stb.DeleteBucket([]byte(stagingID))
+	})
+}
+
+// StagingExists returns true if a staging bucket for the given ID exists.
+func (d *DB) StagingExists(stagingID string) bool {
+	var found bool
+	_ = d.db.View(func(tx *bolt.Tx) error {
+		found = tx.Bucket(bktStaging).Bucket([]byte(stagingID)) != nil
+		return nil
+	})
+	return found
+}
+
+// RemoveStaging drops a staging bucket without writing anything to the checksums
+// or roots indexes. It is a no-op when stagingID has never been recorded.
+func (d *DB) RemoveStaging(stagingID string) error {
+	return d.db.Update(func(tx *bolt.Tx) error {
+		sb := tx.Bucket(bktStaging)
+		if sb.Bucket([]byte(stagingID)) == nil {
+			return nil
+		}
+		return sb.DeleteBucket([]byte(stagingID))
 	})
 }
