@@ -191,6 +191,7 @@ func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local
 		}
 		defer func() {
 			if err != nil {
+				err = errors.Join(err, db.RemoveStaging(destination))
 				err = errors.Join(err, db.RemoveRoot(destination))
 			}
 		}()
@@ -216,9 +217,28 @@ func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local
 			}
 		}
 	}
+
 	err = createHardLinks(lCtx.hardlinks)
 	if err != nil {
 		return "", fmt.Errorf("creating deferred hardlinks: %w", err)
+	}
+
+	if e.delta {
+		if !db.StagingExists(destination) {
+			entries, err := filedb.ScanRoot(destination)
+			if err != nil {
+				return "", fmt.Errorf("scanning root %s: %w", destination, err)
+			}
+			err = db.RecordAll(destination, entries)
+			if err != nil {
+				return "", fmt.Errorf("recording root in to staging db: %w", err)
+			}
+		} else {
+			err = db.CommitRoot(destination, destination)
+			if err != nil {
+				return "", fmt.Errorf("updating files database for root %s: %w", destination, err)
+			}
+		}
 	}
 
 	return digest, nil

@@ -442,7 +442,7 @@ func applyDirPerm(log logger.Logger, dirs []*chunked.FileMetadata, root string) 
 	return nil
 }
 
-func updateFileDB(db *filedb.DB, root string, pToc *processedTOC) error {
+func updateFileDB(db *filedb.DB, stagingID string, pToc *processedTOC) error {
 	files := make([]filedb.Entry, len(pToc.cachedFiles)+len(pToc.missingFiles))
 
 	i := 0
@@ -455,7 +455,7 @@ func updateFileDB(db *filedb.DB, root string, pToc *processedTOC) error {
 		i++
 	}
 
-	return db.RecordAll(root, files)
+	return db.RecordAllStaged(stagingID, files)
 }
 
 func fetchAndApplyDeltaLayer(
