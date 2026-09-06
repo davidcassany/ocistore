@@ -240,3 +240,111 @@ func TestScanRoot_integratesWithStagedCommit(t *testing.T) {
 		t.Errorf("PathsForChecksum after ScanRoot+CommitRoot: got %v, want %v", paths, want)
 	}
 }
+
+func TestRecordAllStaged_notVisibleInChecksums(t *testing.T) {
+	db := openTemp(t)
+
+	if err := db.RecordAllStaged("stage1", []filedb.Entry{
+		&entry{digest: "sha256:aaa", relPaths: []string{"usr/bin/foo"}},
+	}); err != nil {
+		t.Fatalf("RecordAllStaged: %v", err)
+	}
+
+	if !db.StagingExists("stage1") {
+		t.Error("expected staging to exist after RecordAllStaged")
+	}
+	paths, err := db.PathsForChecksum("sha256:aaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 0 {
+		t.Errorf("staged entry must not appear in checksums before CommitRoot, got %v", paths)
+	}
+}
+
+func TestCommitRoot_updatesAllIndexes(t *testing.T) {
+	db := openTemp(t)
+
+	finalRoot := "/extractions/final"
+	entries := []filedb.Entry{
+		&entry{digest: "sha256:aaa", relPaths: []string{"usr/bin/foo", "usr/bin/foo2"}},
+		&entry{digest: "sha256:bbb", relPaths: []string{"usr/lib/bar.so"}},
+		&entry{digest: "", relPaths: []string{"usr/share/doc"}}, // directory — skipped
+	}
+
+	if err := db.RecordAllStaged("stage1", entries); err != nil {
+		t.Fatalf("RecordAllStaged: %v", err)
+	}
+	if err := db.CommitRoot("stage1", finalRoot); err != nil {
+		t.Fatalf("CommitRoot: %v", err)
+	}
+
+	if db.StagingExists("stage1") {
+		t.Error("staging bucket must be removed after CommitRoot")
+	}
+	if !db.RootExists(finalRoot) {
+		t.Error("final root must exist after CommitRoot")
+	}
+
+	paths, err := db.PathsForChecksum("sha256:aaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.Join(finalRoot, "usr/bin/foo"),
+		filepath.Join(finalRoot, "usr/bin/foo2"),
+	}
+	slices.Sort(paths)
+	slices.Sort(want)
+	if !slices.Equal(paths, want) {
+		t.Errorf("PathsForChecksum(aaa) after CommitRoot: got %v, want %v", paths, want)
+	}
+}
+
+func TestCommitRoot_stagingNotFoundReturnsError(t *testing.T) {
+	db := openTemp(t)
+	if err := db.CommitRoot("nonexistent", "/extractions/final"); err == nil {
+		t.Fatal("expected error when staging ID does not exist, got nil")
+	}
+}
+
+func TestCommitRoot_existingRootReturnsError(t *testing.T) {
+	db := openTemp(t)
+
+	finalRoot := "/extractions/final"
+	db.RecordAll(finalRoot, []filedb.Entry{
+		&entry{digest: "sha256:aaa", relPaths: []string{"bin/x"}},
+	})
+	db.RecordAllStaged("stage1", []filedb.Entry{
+		&entry{digest: "sha256:bbb", relPaths: []string{"bin/y"}},
+	})
+
+	if err := db.CommitRoot("stage1", finalRoot); err == nil {
+		t.Fatal("expected error when committing to an existing root, got nil")
+	}
+}
+
+func TestRemoveStaging_cleansUpWithoutAffectingChecksums(t *testing.T) {
+	db := openTemp(t)
+
+	db.RecordAllStaged("stage1", []filedb.Entry{
+		&entry{digest: "sha256:aaa", relPaths: []string{"bin/x"}},
+	})
+	if err := db.RemoveStaging("stage1"); err != nil {
+		t.Fatalf("RemoveStaging: %v", err)
+	}
+	if db.StagingExists("stage1") {
+		t.Error("staging bucket must be removed after RemoveStaging")
+	}
+	paths, _ := db.PathsForChecksum("sha256:aaa")
+	if len(paths) != 0 {
+		t.Errorf("checksums must be unaffected by RemoveStaging, got %v", paths)
+	}
+}
+
+func TestRemoveStaging_nonexistentIsNoop(t *testing.T) {
+	db := openTemp(t)
+	if err := db.RemoveStaging("does-not-exist"); err != nil {
+		t.Fatalf("RemoveStaging on unknown ID: %v", err)
+	}
+}
