@@ -54,7 +54,7 @@ func createStructuralNodes(log logger.Logger, structure []*chunked.FileMetadata,
 
 		err = os.MkdirAll(filepath.Dir(path), os.FileMode(0700))
 		if err != nil {
-			return nil, fmt.Errorf("creating parent directories for path %q", path)
+			return nil, fmt.Errorf("creating parent directories for path %q: %w", path, err)
 		}
 
 		switch n.Type {
@@ -100,18 +100,6 @@ func createStructuralNodes(log logger.Logger, structure []*chunked.FileMetadata,
 			if err != nil {
 				return nil, fmt.Errorf("creating symlink %s -> %s: %w", path, n.Linkname, err)
 			}
-		case chunked.TypeLink:
-			// apply hardlinks after applying all layers
-			old := filepath.Join(target, n.Linkname)
-			err = ensureSafePath(target, old)
-			if err != nil {
-				return nil, fmt.Errorf("illegal hardlink target: %w", err)
-			}
-			lCtx.hardlinks = append(lCtx.hardlinks, &hardlink{
-				old: old,
-				new: filepath.Join(target, n.Name),
-			})
-			continue
 		case chunked.TypeChar, chunked.TypeBlock:
 			err = os.Remove(path)
 			if err != nil && !os.IsNotExist(err) {
@@ -135,8 +123,8 @@ func createStructuralNodes(log logger.Logger, structure []*chunked.FileMetadata,
 			if err != nil {
 				return nil, fmt.Errorf("creating the fifo file %s: %w", path, err)
 			}
-		case chunked.TypeChunk:
-			log.Warn("'chunk' entry type found in structural nodes list, ignoring it")
+		case chunked.TypeChunk, chunked.TypeLink:
+			log.Warn("'chunk' or 'hardlink' entry type found in structural nodes list, ignoring it")
 			continue
 		}
 		err = applyMetadata(path, n)
@@ -463,7 +451,10 @@ func fetchAndApplyDeltaLayer(
 	toc *chunked.TOC, layerDesc ocispec.Descriptor, destination string, lCtx *layerCtx,
 ) error {
 
-	pToc := processTOC(log, db, toc, lCtx)
+	pToc, err := processTOC(log, db, toc, lCtx, destination)
+	if err != nil {
+		return fmt.Errorf("processing Table of Contents (ToC): %w", err)
+	}
 
 	dirs, err := createStructuralNodes(log, pToc.structure, destination, lCtx)
 	if err != nil {

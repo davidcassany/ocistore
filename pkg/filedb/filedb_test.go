@@ -12,8 +12,9 @@ import (
 )
 
 type entry struct {
-	digest   string
-	relPaths []string
+	digest    string
+	relPaths  []string
+	temporary bool
 }
 
 func (e entry) Digest() string {
@@ -22,6 +23,10 @@ func (e entry) Digest() string {
 
 func (e entry) RelPaths() []string {
 	return e.relPaths
+}
+
+func (e entry) IsTemporary() bool {
+	return e.temporary
 }
 
 func openTemp(t *testing.T) *filedb.DB {
@@ -259,6 +264,36 @@ func TestRecordAllStaged_notVisibleInChecksums(t *testing.T) {
 	}
 	if len(paths) != 0 {
 		t.Errorf("staged entry must not appear in checksums before CommitRoot, got %v", paths)
+	}
+}
+
+func TestRecordAllStaged_and_StagedPathsForChecksum(t *testing.T) {
+	db := openTemp(t)
+
+	if err := db.RecordAllStaged("stage1", []filedb.Entry{
+		&entry{digest: "sha256:aaa", relPaths: []string{"usr/bin/foo"}},
+	}); err != nil {
+		t.Fatalf("RecordAllStaged: %v", err)
+	}
+
+	if err := db.RecordAllStaged("stage1", []filedb.Entry{
+		&entry{digest: "sha256:aaa", relPaths: []string{"usr/bin/foo-copy"}},
+	}); err != nil {
+		t.Fatalf("RecordAllStaged: %v", err)
+	}
+
+	paths, err := db.StagedPathsForChecksum("stage1", "sha256:aaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Errorf("staged paths must be accessible by digest, got %v", paths)
+	}
+	if paths[0] != "usr/bin/foo" {
+		t.Errorf("staged path is not matching, got %s", paths[0])
+	}
+	if paths[1] != "usr/bin/foo-copy" {
+		t.Errorf("staged path is not matching, got %s", paths[1])
 	}
 }
 

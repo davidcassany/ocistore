@@ -80,6 +80,7 @@ func (d *DB) Close() error {
 type Entry interface {
 	Digest() string
 	RelPaths() []string
+	IsTemporary() bool
 }
 
 // RecordAll records all entries from a single layer extraction under root in
@@ -96,7 +97,7 @@ func (d *DB) RecordAll(root string, entries []Entry) error {
 		}
 
 		for _, e := range entries {
-			if e.Digest() == "" {
+			if e.Digest() == "" || e.IsTemporary() {
 				continue
 			}
 
@@ -132,6 +133,27 @@ func (d *DB) PathsForChecksum(digest string) ([]string, error) {
 			return nil
 		}
 		return sb.ForEach(func(k, _ []byte) error {
+			paths = append(paths, string(k))
+			return nil
+		})
+	})
+	return paths, err
+}
+
+// StagedPathsForChecksum returns all relative paths to which the given digest has
+// been extracted. Returns an empty (non-nil) slice when the digest is unknown.
+func (d *DB) StagedPathsForChecksum(stagingID, digest string) ([]string, error) {
+	paths := []string{}
+	err := d.db.View(func(tx *bolt.Tx) error {
+		sb := tx.Bucket(bktStaging).Bucket([]byte(stagingID))
+		if sb == nil {
+			return nil
+		}
+		dsb := sb.Bucket([]byte(digest))
+		if dsb == nil {
+			return nil
+		}
+		return dsb.ForEach(func(k, _ []byte) error {
 			paths = append(paths, string(k))
 			return nil
 		})
@@ -198,14 +220,18 @@ func (d *DB) RecordAllStaged(stagingID string, entries []Entry) error {
 			return fmt.Errorf("creating staging bucket for %s: %w", stagingID, err)
 		}
 		for _, e := range entries {
-			if e.Digest() == "" {
+			if e.Digest() == "" || e.IsTemporary() {
 				continue
+			}
+			csb, err := ssb.CreateBucketIfNotExists([]byte(e.Digest()))
+			if err != nil {
+				return fmt.Errorf("creating checksum bucket for %s: %w", e.Digest(), err)
 			}
 			for _, rp := range e.RelPaths() {
 				if rp == "" {
 					continue
 				}
-				if err := ssb.Put([]byte(rp), []byte(e.Digest())); err != nil {
+				if err := csb.Put([]byte(rp), nil); err != nil {
 					return err
 				}
 			}
@@ -233,20 +259,25 @@ func (d *DB) CommitRoot(stagingID, finalRoot string) error {
 		}
 
 		cb := tx.Bucket(bktChecksums)
-		if err := ssb.ForEach(func(relPath, digest []byte) error {
-			csb, err := cb.CreateBucketIfNotExists(digest)
-			if err != nil {
-				return fmt.Errorf("creating checksum bucket for %s: %w", string(digest), err)
+		if err := ssb.ForEachBucket(func(digest []byte) error {
+			dsb := ssb.Bucket(digest)
+			if err := dsb.ForEach(func(relPath, _ []byte) error {
+				csb, err := cb.CreateBucketIfNotExists(digest)
+				if err != nil {
+					return fmt.Errorf("creating checksum bucket for %s: %w", string(digest), err)
+				}
+				absPath := []byte(filepath.Join(finalRoot, string(relPath)))
+				if err := csb.Put(absPath, nil); err != nil {
+					return err
+				}
+				return rsb.Put(relPath, digest)
+			}); err != nil {
+				return fmt.Errorf("iterating staged paths: %w", err)
 			}
-			absPath := []byte(filepath.Join(finalRoot, string(relPath)))
-			if err := csb.Put(absPath, nil); err != nil {
-				return err
-			}
-			return rsb.Put(relPath, digest)
+			return nil
 		}); err != nil {
-			return err
+			return fmt.Errorf("iterating staged sub-buckets: %w", err)
 		}
-
 		return stb.DeleteBucket([]byte(stagingID))
 	})
 }

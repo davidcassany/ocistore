@@ -1,6 +1,6 @@
 module github.com/davidcassany/ocistore
 
-go 1.26.3
+go 1.27
 
 require (
 	github.com/containerd/containerd/v2 v2.3.3

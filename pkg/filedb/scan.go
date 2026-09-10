@@ -32,6 +32,7 @@ type scannedEntry struct {
 
 func (e *scannedEntry) Digest() string     { return e.digest }
 func (e *scannedEntry) RelPaths() []string { return []string{e.relPath} }
+func (e *scannedEntry) IsTemporary() bool  { return false }
 
 // ScanRoot walks root and returns one Entry per regular, non-empty file using
 // the same digest format as zstd-chunked ("sha256:<hex>" of raw file bytes).
