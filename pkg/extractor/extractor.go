@@ -22,10 +22,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"uuid"
 
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/core/remotes"
@@ -44,6 +46,7 @@ const (
 
 	whiteout    = ".wh."
 	opqWhiteout = ".wh..wh..opq"
+	tmpDir      = ".toRemove"
 )
 
 type Extractor struct {
@@ -89,8 +92,9 @@ type metadata struct {
 }
 
 type layerCtx struct {
-	// seenPaths collects already applied paths, if for a given key path it
-	// is set to false it is assumed this is not an applied path
+	// seenPaths collects already applied paths, set to true for no directory paths
+	// and set to false for directory paths. Note that a key with a value set to false
+	// hase a different meaning than a missing key.
 	seenPaths map[string]bool
 
 	// whiteouts collects all whiteouts, opaque or not, if for a given key path
@@ -104,7 +108,12 @@ type layerCtx struct {
 
 	// hardlinks are all links found in layers so they can be created
 	// after extracting them all
-	hardlinks []*hardlink
+	links hardlinks
+
+	// keptWh are files that are supressed form the final extraction but temporarly kept in
+	// case they are the source of a hardlink in the same or higher layer. The key is the orginal
+	// path and the value the temporary file path used for the extraction.
+	keptWh map[string]string
 }
 
 func newLayerCtx() *layerCtx {
@@ -112,7 +121,8 @@ func newLayerCtx() *layerCtx {
 		seenPaths:   map[string]bool{},
 		whiteouts:   map[string]bool{},
 		pendingOpqs: []string{},
-		hardlinks:   []*hardlink{},
+		links:       hardlinks{},
+		keptWh:      map[string]string{},
 	}
 }
 
@@ -123,11 +133,8 @@ func (lc *layerCtx) applyOpaques() {
 	lc.pendingOpqs = []string{}
 }
 
-// hardlink tracks links that must be applied after all layers are extracted
-type hardlink struct {
-	old string
-	new string
-}
+// The key is the original filepath and the values string slice represents alls the links created from the original file.
+type hardlinks map[string][]string
 
 func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local bool, verify bool) (_ string, err error) {
 	destination, err = filepath.Abs(destination)
@@ -216,11 +223,19 @@ func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local
 				return "", err
 			}
 		}
+		err = createHardLinks(lCtx)
+		if err != nil {
+			return "", fmt.Errorf("creating deferred hardlinks: %w", err)
+		}
 	}
 
-	err = createHardLinks(lCtx.hardlinks)
+	if len(lCtx.links) > 0 {
+		return "", fmt.Errorf("there are pending links to be created: %v", lCtx.links)
+	}
+
+	err = os.RemoveAll(filepath.Join(destination, tmpDir))
 	if err != nil {
-		return "", fmt.Errorf("creating deferred hardlinks: %w", err)
+		return "", fmt.Errorf("removing kept whiteouts: %w", err)
 	}
 
 	if e.delta {
@@ -287,7 +302,6 @@ func filterWhiteout(lCtx *layerCtx, relPath string) bool {
 		return true
 	} else if after, ok := strings.CutPrefix(baseName, whiteout); ok {
 		relPath = filepath.Join(dirName, after)
-		lCtx.seenPaths[relPath] = true
 		lCtx.whiteouts[relPath] = true
 		return true
 	}
@@ -295,15 +309,27 @@ func filterWhiteout(lCtx *layerCtx, relPath string) bool {
 	return false
 }
 
-func isParentWhiteout(opaques map[string]bool, path string) bool {
+func isWhiteout(lCtx *layerCtx, path string) bool {
+	if lCtx.whiteouts[path] {
+		return true
+	}
 	dir := filepath.Dir(path)
 	for dir != "." && dir != "/" && dir != "" {
-		if opaques[dir] {
+		if lCtx.whiteouts[dir] {
 			return true
 		}
 		dir = filepath.Dir(dir)
 	}
 	return false
+}
+
+func updateTarPath(hdr *tar.Header, path string) {
+	hdr.Name = path
+	if hdr.PAXRecords != nil {
+		if _, ok := hdr.PAXRecords["path"]; ok {
+			hdr.PAXRecords["path"] = hdr.Name
+		}
+	}
 }
 
 // filterFunc prevents to extract files that are included in the extracted cache and feeds the extracted cache with files being extracted.
@@ -314,19 +340,32 @@ func filterFunc(destination string, lCtx *layerCtx) func(hdr *tar.Header) (bool,
 		if relPath == "." || relPath == "/" {
 			return true, nil
 		}
+		absPath := filepath.Join(destination, relPath)
 
 		// filter whiteouts
-		if filterWhiteout(lCtx, relPath) || isParentWhiteout(lCtx.whiteouts, relPath) {
+		if filterWhiteout(lCtx, relPath) {
 			return false, nil
 		}
 
+		// check if the entry is meant to be ignored
+		if isWhiteout(lCtx, relPath) {
+			if hdr.Typeflag != tar.TypeReg {
+				return false, nil
+			}
+			updateTarPath(hdr, filepath.Join(tmpDir, uuid.New().String()))
+			lCtx.keptWh[absPath] = filepath.Join(destination, hdr.Name)
+		}
+
 		// omit if previously seen from an upper layer
-		if lCtx.seenPaths[relPath] {
+		if seen, ok := lCtx.seenPaths[relPath]; ok {
+			if seen && hdr.Typeflag == tar.TypeDir {
+				lCtx.whiteouts[relPath] = true
+			}
 			return false, nil
 		}
 
 		// mark as seen for subsequent lower layers
-		lCtx.seenPaths[relPath] = true
+		lCtx.seenPaths[relPath] = hdr.Typeflag != tar.TypeDir
 
 		// intercept hardlinks for deferred processing
 		if hdr.Typeflag == tar.TypeLink {
@@ -334,10 +373,7 @@ func filterFunc(destination string, lCtx *layerCtx) func(hdr *tar.Header) (bool,
 			if err := ensureSafePath(destination, oldpath); err != nil {
 				return false, fmt.Errorf("illegal hardlink target: %w", err)
 			}
-			lCtx.hardlinks = append(lCtx.hardlinks, &hardlink{
-				new: filepath.Join(destination, relPath),
-				old: oldpath,
-			})
+			lCtx.links[oldpath] = append(lCtx.links[oldpath], absPath)
 			return false, nil // Skip native extraction
 		}
 
@@ -432,22 +468,29 @@ func fetchManifestAndConfig(log logger.Logger, fetcher remotes.Fetcher, metadata
 	}
 }
 
-func createHardLinks(links []*hardlink) error {
-	for _, link := range links {
-		if link == nil {
+func createHardLinks(lCtx *layerCtx) error {
+	pendingLinks := hardlinks{}
+
+	for oldP, newPs := range lCtx.links {
+		if lCtx.keptWh[oldP] != "" {
+			oldP = lCtx.keptWh[oldP]
+		} else if _, err := os.Stat(oldP); err != nil && errors.Is(err, fs.ErrNotExist) {
+			pendingLinks[oldP] = newPs
 			continue
 		}
-		err := os.Link(link.old, link.new)
-		if err != nil {
-			if os.IsExist(err) {
-				_ = os.Remove(link.new)
-				err = os.Link(link.old, link.new)
-			}
-
+		for _, newP := range newPs {
+			err := os.Link(oldP, newP)
 			if err != nil {
-				return fmt.Errorf("creating hardlink %s -> %s: %w", link.new, link.old, err)
+				if os.IsExist(err) {
+					_ = os.Remove(newP)
+					err = os.Link(oldP, newP)
+				}
+				if err != nil {
+					return fmt.Errorf("creating hardlink %s -> %s: %w", newP, oldP, err)
+				}
 			}
 		}
 	}
+	lCtx.links = pendingLinks
 	return nil
 }

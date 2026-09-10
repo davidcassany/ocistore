@@ -17,8 +17,12 @@ limitations under the License.
 package extractor
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
+	"uuid"
 
 	"github.com/davidcassany/ocistore/pkg/chunked"
 	"github.com/davidcassany/ocistore/pkg/filedb"
@@ -40,6 +44,10 @@ type tocFile struct {
 
 	// Range represents the full byte range of the file within the compressed layer
 	Range *byteRange
+
+	// Temporary is flag to acknowledge this is a temporary file which might not be
+	// fully extracted
+	Temporary bool
 }
 
 type byteRange struct {
@@ -88,19 +96,37 @@ func (t *tocFile) RelPaths() []string {
 	return paths
 }
 
-func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layerCtx) *processedTOC {
+func (t *tocFile) IsTemporary() bool {
+	return t.Temporary
+}
+
+func getCachedPathsForDigest(bdb *filedb.DB, destination, digest, relPath string) ([]string, error) {
+	var err1, err2 error
+	var paths []string
+	paths, err1 = bdb.PathsForChecksum(digest)
+	if len(paths) == 0 {
+		paths, err2 = bdb.StagedPathsForChecksum(destination, digest)
+		// staged bucket has relative paths
+		for i, path := range paths {
+			paths[i] = filepath.Join(destination, path)
+		}
+	}
+	return paths, errors.Join(err1, err2)
+}
+
+func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layerCtx, destination string) (*processedTOC, error) {
 	//var active *tocFile
 	var missing, cached []*tocFile
 	var structure []*chunked.FileMetadata
 	digests := map[string][]*tocFile{}
 
-	// TODO probably it can be assumed this is already the case, it doesn't make
-	// sense the entry list if they are not sorted by range
-	sort.Slice(toc.Entries, func(i, j int) bool {
-		return toc.Entries[i].Offset < toc.Entries[j].Offset
-	})
-
 	log.Debugf("starting to split Table of Contents between misses, cached and structural files")
+
+	var (
+		temporary bool
+		relPath   string
+		absPath   string
+	)
 
 	for _, entry := range toc.Entries {
 		// if it's a chunk ignore it, the associated reg already has the full offset
@@ -108,20 +134,34 @@ func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layer
 			continue
 		}
 
-		relPath := filepath.Clean(entry.Name)
+		temporary = false
+		relPath = filepath.Clean(entry.Name)
+		absPath = filepath.Join(destination, relPath)
 
 		// filter whiteouts
-		if filterWhiteout(lCtx, relPath) || isParentWhiteout(lCtx.whiteouts, relPath) {
+		if filterWhiteout(lCtx, relPath) {
 			continue
 		}
 
+		if isWhiteout(lCtx, relPath) {
+			if entry.Type != chunked.TypeReg {
+				continue
+			}
+			entry.Name = filepath.Join(tmpDir, uuid.New().String())
+			lCtx.keptWh[absPath] = filepath.Join(destination, entry.Name)
+			temporary = true
+		}
+
 		// omit if previously seen from an upper layer
-		if lCtx.seenPaths[relPath] {
+		if seen, ok := lCtx.seenPaths[relPath]; ok {
+			if seen && entry.Type == chunked.TypeDir {
+				lCtx.whiteouts[relPath] = true
+			}
 			continue
 		}
 
 		// Ensure we won't extract this file again on follow up layers
-		lCtx.seenPaths[relPath] = true
+		lCtx.seenPaths[relPath] = entry.Type != chunked.TypeDir
 
 		var tf *tocFile
 
@@ -133,12 +173,11 @@ func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layer
 				continue
 			}
 			// query filedb using the whole file digest
-			paths, err := bdb.PathsForChecksum(entry.Digest)
+			paths, err := getCachedPathsForDigest(bdb, destination, entry.Digest, relPath)
 			if err != nil {
-				log.Warnf("error getting cached paths for digest %s, considering it a cache miss. err: %s", entry.Digest, err.Error())
+				log.Warnf("error getting cached paths for digest %s: %s", entry.Digest, err.Error())
 			}
 
-			// The 'reg' entry contains the payload coordinates
 			tf = &tocFile{
 				Entry:       &entry,
 				CachedPaths: paths,
@@ -146,24 +185,34 @@ func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layer
 					Offset: entry.Offset,
 					Size:   entry.EndOffset - entry.Offset,
 				},
+				Temporary: temporary,
 			}
 
-			// consider duplicated missing digests as cached data
-			refs := digests[entry.Digest]
-			if len(refs) == 0 {
-				digests[entry.Digest] = []*tocFile{tf}
-			} else {
-				if len(paths) == 0 {
-					// pre-cached from current layer, this is a duplicated file inside the same TOC
-					// do not track all duplicate refrences, they will only point to the first match
-					tf.Duplicates = refs
-					for _, e := range refs {
-						e.Duplicates = append(e.Duplicates, tf)
+			if !temporary {
+				// consider duplicated missing digests as cached data
+				refs := digests[entry.Digest]
+				if len(refs) == 0 {
+					digests[entry.Digest] = []*tocFile{tf}
+				} else {
+					if len(paths) == 0 {
+						// pre-cached from current layer, this is a duplicated file inside the same TOC
+						// do not track all duplicate refrences, they will only point to the first match
+						tf.Duplicates = refs
+						for _, e := range refs {
+							e.Duplicates = append(e.Duplicates, tf)
+						}
 					}
+					digests[entry.Digest] = append(refs, tf)
 				}
-				digests[entry.Digest] = append(refs, tf)
 			}
-		case chunked.TypeDir, chunked.TypeSymlink, chunked.TypeChar, chunked.TypeBlock, chunked.TypeFifo, chunked.TypeLink:
+		case chunked.TypeLink:
+			old := filepath.Join(destination, entry.Linkname)
+			err := ensureSafePath(destination, old)
+			if err != nil {
+				return nil, fmt.Errorf("illegal hardlink target: %w", err)
+			}
+			lCtx.links[old] = append(lCtx.links[old], absPath)
+		case chunked.TypeDir, chunked.TypeSymlink, chunked.TypeChar, chunked.TypeBlock, chunked.TypeFifo:
 			structure = append(structure, &entry)
 		}
 
@@ -171,6 +220,7 @@ func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layer
 			if len(tf.CachedPaths) > 0 {
 				// Cache Hit: The file is already available in disk
 				cached = append(cached, tf)
+
 			} else if len(tf.Duplicates) == 0 {
 				// Cache Miss: Queue the range chunk for download.
 				// We are not adding to misses any duplicated only first apprearence is added
@@ -178,6 +228,22 @@ func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layer
 			}
 		}
 	}
+
+	// Optimize unneeded kept resources
+	cached = slices.DeleteFunc(cached, func(tf *tocFile) bool {
+		if !tf.IsTemporary() {
+			return false
+		}
+		absPath = filepath.Join(destination, tf.Entry.Name)
+		return len(lCtx.links[absPath]) == 0
+	})
+	missing = slices.DeleteFunc(missing, func(tf *tocFile) bool {
+		if !tf.IsTemporary() {
+			return false
+		}
+		absPath = filepath.Join(destination, tf.Entry.Name)
+		return len(lCtx.links[absPath]) == 0
+	})
 
 	// Ensure opaques are honored in any follow up layer
 	lCtx.applyOpaques()
@@ -190,7 +256,7 @@ func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layer
 		missingFiles: missing,
 		cachedFiles:  cached,
 		structure:    structure,
-	}
+	}, nil
 }
 
 func groupMissingFiles(misses []*tocFile) []*byteRangeGroup {
