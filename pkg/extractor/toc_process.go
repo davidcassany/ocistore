@@ -114,13 +114,13 @@ func getCachedPathsForDigest(bdb *filedb.DB, destination, digest, relPath string
 	return paths, errors.Join(err1, err2)
 }
 
-func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layerCtx, destination string) (*processedTOC, error) {
+func processTOC(bdb *filedb.DB, toc *chunked.TOC, lCtx *layerCtx, destination string) (*processedTOC, error) {
 	//var active *tocFile
 	var missing, cached []*tocFile
 	var structure []*chunked.FileMetadata
 	digests := map[string][]*tocFile{}
 
-	log.Debugf("starting to split Table of Contents between misses, cached and structural files")
+	logger.Debug("starting to split Table of Contents between misses, cached and structural files")
 
 	var (
 		temporary bool
@@ -175,7 +175,7 @@ func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layer
 			// query filedb using the whole file digest
 			paths, err := getCachedPathsForDigest(bdb, destination, entry.Digest, relPath)
 			if err != nil {
-				log.Warnf("error getting cached paths for digest %s: %s", entry.Digest, err.Error())
+				logger.Warning("error getting cached paths for digest %s: %s", entry.Digest, err.Error())
 			}
 
 			tf = &tocFile{
@@ -248,9 +248,9 @@ func processTOC(log logger.Logger, bdb *filedb.DB, toc *chunked.TOC, lCtx *layer
 	// Ensure opaques are honored in any follow up layer
 	lCtx.applyOpaques()
 
-	log.Debugf("collected %d missing files", len(missing))
-	log.Debugf("collected %d cached files", len(cached))
-	log.Debugf("collected %d structural nodes", len(structure))
+	logger.Debug("collected %d missing files", len(missing))
+	logger.Debug("collected %d cached files", len(cached))
+	logger.Debug("collected %d structural nodes", len(structure))
 
 	return &processedTOC{
 		missingFiles: missing,

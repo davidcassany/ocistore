@@ -26,7 +26,6 @@ import (
 )
 
 var cs *ocistore.OCIStore
-var log logger.Logger
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
@@ -46,40 +45,26 @@ func Execute() {
 	}
 }
 
-func initLogger(debug bool, llvl string) logger.Logger {
-	var log logger.Logger
-	var err error
-
-	if debug {
-		log, _ = logger.NewLogger(logger.DebugLevel)
-	} else if llvl != "" {
-		log, err = logger.NewLogger(llvl)
-		if err != nil {
-			log, _ = logger.NewLogger(logger.DebugLevel)
-		}
-		log.Warnf("could parse log level '%s', setting log to '%s' level", llvl, logger.DebugLevel)
-	} else {
-		log, _ = logger.NewLogger(logger.InfoLevel)
-	}
-	return log
-}
-
 func initCS(cmd *cobra.Command, args []string) error {
 	flags := cmd.Flags()
 	root, _ := flags.GetString("root")
 	llvl, _ := flags.GetString("loglevel")
 	debug, _ := flags.GetBool("debug")
 
-	log = initLogger(debug, llvl)
+	if debug {
+		logger.SetLevel(logger.DebugLevel)
+	} else {
+		logger.SetLevel(logger.ParseLogLevel(llvl))
+	}
 
-	cs = ocistore.NewOCIStore(log, root)
+	cs = ocistore.NewOCIStore(root)
 	return cs.Init(context.Background())
 }
 
 func init() {
 	rootCmd.PersistentFlags().String("root", ocistore.DefaultRoot, "path for the containerd local store")
 	rootCmd.PersistentFlags().Bool("debug", false, "set log ouput to debug level")
-	rootCmd.PersistentFlags().String("loglevel", "", "set log ouput level")
+	rootCmd.PersistentFlags().String("loglevel", "info", "set log ouput level (info by default)")
 	rootCmd.MarkFlagsMutuallyExclusive("debug", "loglevel")
 
 	cobra.OnFinalize(
@@ -87,14 +72,14 @@ func init() {
 			if cs != nil && cs.IsInitiated() {
 				err := cs.GetSnapshotter(cs.GetDriver()).Close()
 				if err != nil {
-					cs.Logger().Warnf("failed closing snapshotter: %v", err)
+					logger.Warning("failed closing snapshotter: %v", err)
 				}
 			}
 		}, func() {
 			if cs != nil && cs.IsInitiated() {
 				err := cs.RunGarbageCollector()
 				if err != nil {
-					cs.Logger().Warnf("failed running garbage collector: %v", err)
+					logger.Warning("failed running garbage collector: %v", err)
 				}
 			}
 		},

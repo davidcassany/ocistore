@@ -31,6 +31,7 @@ import (
 	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
+	"github.com/davidcassany/ocistore/pkg/logger"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -155,22 +156,22 @@ func (c *OCIStore) Import(reader io.Reader, opts ...ImportOpt) (_ []images.Image
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to import image: %v", err)
+		logger.Error("failed to create lease to import image: %v", err)
 		return nil, err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on import operation")
+			logger.Warning("could not remove lease on import operation")
 		}
 	}()
 
 	imgs, err := c.importFunc(ctx, reader, opts...)
 	if err != nil {
-		c.log.Error("failed importing from reader interface")
+		logger.Error("failed importing from reader interface")
 	}
 
-	c.log.Infof("Successfully imported %d image(s)", len(imgs))
+	logger.Info("Successfully imported %d image(s)", len(imgs))
 	return imgs, nil
 }
 
@@ -181,22 +182,22 @@ func (c *OCIStore) ImportFile(file string, opts ...ImportOpt) (_ []images.Image,
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to import image: %v", err)
+		logger.Error("failed to create lease to import image: %v", err)
 		return nil, err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on import operation")
+			logger.Warning("could not remove lease on import operation")
 		}
 	}()
 
 	imgs, err := c.importFile(ctx, file, opts...)
 	if err != nil {
-		c.log.Errorf("failed importing from file '%s'", file)
+		logger.Error("failed importing from file '%s'", file)
 	}
 
-	c.log.Infof("Successfully imported %d image(s) from '%s'", len(imgs), file)
+	logger.Info("Successfully imported %d image(s) from '%s'", len(imgs), file)
 
 	return imgs, nil
 }
@@ -208,23 +209,23 @@ func (c *OCIStore) SingleImportFile(file string, opts ...ImportOpt) (_ *images.I
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to import image: %v", err)
+		logger.Error("failed to create lease to import image: %v", err)
 		return nil, err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on import operation")
+			logger.Warning("could not remove lease on import operation")
 		}
 	}()
 
 	imgs, err := c.importFile(ctx, file, opts...)
 	if err != nil {
-		c.log.Errorf("failed importing from file '%s'", file)
+		logger.Error("failed importing from file '%s'", file)
 	}
 
 	if len(imgs) == 0 {
-		c.log.Errorf("no images imported from file '%s'", file)
+		logger.Error("no images imported from file '%s'", file)
 		return nil, fmt.Errorf("something went wrong, no images imported")
 	}
 
@@ -233,12 +234,12 @@ func (c *OCIStore) SingleImportFile(file string, opts ...ImportOpt) (_ *images.I
 		delImg := func(img images.Image) {
 			err = c.delete(ctx, img.Name)
 			if err != nil {
-				c.log.Errorf("cound not delete imported image '%s': %v", img.Name, err)
+				logger.Error("cound not delete imported image '%s': %v", img.Name, err)
 				dErrs = append(dErrs, err)
 			}
 		}
 
-		c.log.Warnf("imported '%d' images. Only keeping first one", len(imgs))
+		logger.Warning("imported '%d' images. Only keeping first one", len(imgs))
 		for _, img := range imgs[1:] {
 			delImg(img)
 		}
@@ -247,7 +248,7 @@ func (c *OCIStore) SingleImportFile(file string, opts ...ImportOpt) (_ *images.I
 			return nil, fmt.Errorf("failed removing imported images")
 		}
 	}
-	c.log.Infof("Successfully imported '%s' image from '%s'", imgs[0].Name, file)
+	logger.Info("Successfully imported '%s' image from '%s'", imgs[0].Name, file)
 	return &imgs[0], nil
 }
 
@@ -370,7 +371,7 @@ func (c *OCIStore) importFunc(ctx context.Context, reader io.Reader, opts ...Imp
 		var uErrs []error
 		for i := range imgs {
 			if err := c.unpack(ctx, &imgs[i], iOpts.aOpts...); err != nil {
-				c.log.Errorf("failed to unpack image '%s': %v", imgs[i].Name, err)
+				logger.Error("failed to unpack image '%s': %v", imgs[i].Name, err)
 				uErrs = append(uErrs, err)
 			}
 		}

@@ -27,6 +27,7 @@ import (
 	"github.com/containerd/containerd/v2/core/mount"
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/errdefs"
+	"github.com/davidcassany/ocistore/pkg/logger"
 	"github.com/opencontainers/image-spec/identity"
 )
 
@@ -105,10 +106,10 @@ func (c *OCIStore) Mount(img *images.Image, target string, key string, readonly 
 	if mOpt.unpack {
 		err = c.unpack(ctx, img, mOpt.aOpts...)
 		if err != nil {
-			c.log.Errorf("failed to unpack image '%s': %v", img.Name, err)
+			logger.Error("failed to unpack image '%s': %v", img.Name, err)
 			return "", err
 		}
-		c.log.Infof("Successfully unpacked image '%s'", img.Name)
+		logger.Info("Successfully unpacked image '%s'", img.Name)
 	}
 
 	var parent string
@@ -122,7 +123,7 @@ func (c *OCIStore) Mount(img *images.Image, target string, key string, readonly 
 	} else {
 		diffIDs, err := img.RootFS(ctx, c.cs, c.platform)
 		if err != nil {
-			c.log.Errorf("failed to get diff IDs of the image '%s': %v", img.Name, err)
+			logger.Error("failed to get diff IDs of the image '%s': %v", img.Name, err)
 			return "", err
 		}
 		parent = identity.ChainID(diffIDs).String()
@@ -147,16 +148,16 @@ func (c *OCIStore) Mount(img *images.Image, target string, key string, readonly 
 			mounts, err = sn.Mounts(ctx, key)
 		}
 		if err != nil {
-			c.log.Errorf("failed to create an active commit for image '%s': %v", img.Name, err)
+			logger.Error("failed to create an active commit for image '%s': %v", img.Name, err)
 			return "", err
 		}
 	}
 
 	if err := mount.All(mounts, target); err != nil {
 		if err := sn.Remove(ctx, key); err != nil && !errdefs.IsNotFound(err) {
-			c.log.Errorf("error cleaning up snapshot after mount error: %v", err)
+			logger.Error("error cleaning up snapshot after mount error: %v", err)
 		}
-		c.log.Errorf("failed to mount image '%s': %v", img.Name, err)
+		logger.Error("failed to mount image '%s': %v", img.Name, err)
 		return "", err
 	}
 
@@ -179,13 +180,13 @@ func (c *OCIStore) Umount(target string, key string, removeSnap int) (retErr err
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to umount snapshot: %v", err)
+		logger.Error("failed to create lease to umount snapshot: %v", err)
 		return err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on umount snapshot operation")
+			logger.Warning("could not remove lease on umount snapshot operation")
 		}
 	}()
 

@@ -17,6 +17,7 @@ limitations under the License.
 package cmd
 
 import (
+	"github.com/davidcassany/ocistore/pkg/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -27,14 +28,12 @@ var unpackCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(1),
 	PreRunE: initCS,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		log := cs.Logger()
-
-		log.Infof("Attempting to unpack %q", args[0])
+		logger.Info("Attempting to unpack %q", args[0])
 		err := cs.Unpack(args[0])
 		if err != nil {
 			return err
 		}
-		log.Info("Unpack done")
+		logger.Info("Unpack done")
 		return nil
 	},
 }

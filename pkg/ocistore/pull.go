@@ -28,6 +28,7 @@ import (
 	"github.com/containerd/containerd/v2/core/remotes"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/errdefs"
+	"github.com/davidcassany/ocistore/pkg/logger"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"golang.org/x/sync/semaphore"
 )
@@ -99,30 +100,30 @@ func (c *OCIStore) Pull(ref string, opts ...PullOpt) (_ *images.Image, retErr er
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to pull image: %v", err)
+		logger.Error("failed to create lease to pull image: %v", err)
 		return nil, err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on pull operation")
+			logger.Warning("could not remove lease on pull operation")
 		}
 	}()
 
 	img, err := c.fetch(ctx, ref, pOpt)
 	if err != nil {
-		c.log.Errorf("failed to pull image '%s': %v", ref, err)
+		logger.Error("failed to pull image '%s': %v", ref, err)
 		return nil, err
 	}
 
-	c.log.Infof("Successfully pulled image '%s'", img.Name)
+	logger.Info("Successfully pulled image '%s'", img.Name)
 
 	if pOpt.unpack {
 		err = c.unpack(ctx, &img, pOpt.aOpts...)
 		if err != nil {
-			c.log.Errorf("failed to unpack image '%s': %v", img.Name, err)
+			logger.Error("failed to unpack image '%s': %v", img.Name, err)
 		} else {
-			c.log.Infof("Successfully unpacked image '%s'", img.Name)
+			logger.Info("Successfully unpacked image '%s'", img.Name)
 		}
 	}
 	return &img, err
@@ -140,7 +141,7 @@ func (c *OCIStore) fetch(ctx context.Context, ref string, pOpts *PullOpts) (img 
 
 	name, desc, err := resolver.Resolve(c.ctx, ref)
 	if err != nil {
-		c.log.Errorf("failed resolving image reference into a name and OCI descriptor: %v", err)
+		logger.Error("failed resolving image reference into a name and OCI descriptor: %v", err)
 		return img, fmt.Errorf("resolving image reference %q into a name and an OCI descriptor: %w", ref, err)
 	}
 

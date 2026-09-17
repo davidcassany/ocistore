@@ -26,6 +26,7 @@ import (
 	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/errdefs"
+	"github.com/davidcassany/ocistore/pkg/logger"
 )
 
 func (c *OCIStore) ListSnapshots(filters ...string) (_ []snapshots.Info, retErr error) {
@@ -35,13 +36,13 @@ func (c *OCIStore) ListSnapshots(filters ...string) (_ []snapshots.Info, retErr 
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to list snapshots: %v", err)
+		logger.Error("failed to create lease to list snapshots: %v", err)
 		return nil, err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on list snapshots operation")
+			logger.Warning("could not remove lease on list snapshots operation")
 		}
 	}()
 
@@ -49,7 +50,7 @@ func (c *OCIStore) ListSnapshots(filters ...string) (_ []snapshots.Info, retErr 
 
 	infos, err := listSnapshots(ctx, sn, filters...)
 	if err != nil && errdefs.IsNotFound(err) {
-		c.log.Warnf("returned a IsNotFound error, this is likely to mean no snapshot has been ever created yet in current content store")
+		logger.Warning("returned a IsNotFound error, this is likely to mean no snapshot has been ever created yet in current content store")
 		return infos, nil
 	}
 
@@ -64,13 +65,13 @@ func (c *OCIStore) GetSnapshot(key string) (_ snapshots.Info, retErr error) {
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to get snapshot: %v", err)
+		logger.Error("failed to create lease to get snapshot: %v", err)
 		return info, err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on get snapshot operation")
+			logger.Warning("could not remove lease on get snapshot operation")
 		}
 	}()
 
@@ -85,23 +86,23 @@ func (c *OCIStore) UpdateSnapshot(info snapshots.Info, fieldpaths ...string) (_ 
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to update snapshot: %v", err)
+		logger.Error("failed to create lease to update snapshot: %v", err)
 		return info, err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on update snapshot operation")
+			logger.Warning("could not remove lease on update snapshot operation")
 		}
 	}()
 
 	info, err = c.updateSnapshot(c.ctx, info, fieldpaths...)
 	if err != nil {
-		c.log.Errorf("failed to update snapshot '%s': %v", info.Name, err)
+		logger.Error("failed to update snapshot '%s': %v", info.Name, err)
 		return info, err
 	}
 
-	c.log.Infof("Successfully updated snapshot '%s'", info.Name)
+	logger.Info("Successfully updated snapshot '%s'", info.Name)
 	return info, nil
 }
 
@@ -112,13 +113,13 @@ func (c *OCIStore) LabelSnapshot(name string, labels map[string]string) (retErr 
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to get snapshot: %v", err)
+		logger.Error("failed to create lease to get snapshot: %v", err)
 		return err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on get snapshot operation")
+			logger.Warning("could not remove lease on get snapshot operation")
 		}
 	}()
 
@@ -130,11 +131,11 @@ func (c *OCIStore) LabelSnapshot(name string, labels map[string]string) (retErr 
 
 	_, err = c.labelSnapshot(ctx, info, labels)
 	if err != nil {
-		c.log.Errorf("failed to update snapshot '%s': %v", info.Name, err)
+		logger.Error("failed to update snapshot '%s': %v", info.Name, err)
 		return err
 	}
 
-	c.log.Infof("Successfully updated snapshot '%s'", info.Name)
+	logger.Info("Successfully updated snapshot '%s'", info.Name)
 	return nil
 }
 
@@ -145,13 +146,13 @@ func (c *OCIStore) RemoveSnapshotLabels(name string, labelKeys ...string) (retEr
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to get snapshot: %v", err)
+		logger.Error("failed to create lease to get snapshot: %v", err)
 		return err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on get snapshot operation")
+			logger.Warning("could not remove lease on get snapshot operation")
 		}
 	}()
 
@@ -163,11 +164,11 @@ func (c *OCIStore) RemoveSnapshotLabels(name string, labelKeys ...string) (retEr
 
 	_, err = c.removeSnapshotLabels(ctx, info, labelKeys...)
 	if err != nil {
-		c.log.Errorf("failed to update snapshot '%s': %v", info.Name, err)
+		logger.Error("failed to update snapshot '%s': %v", info.Name, err)
 		return err
 	}
 
-	c.log.Infof("Successfully updated snapshot '%s'", info.Name)
+	logger.Info("Successfully updated snapshot '%s'", info.Name)
 	return nil
 }
 
@@ -190,11 +191,11 @@ func (c *OCIStore) removeSnapshotsChain(ctx context.Context, s snapshots.Snapsho
 	var walkFunc func(ctx context.Context, s snapshots.Snapshotter, key string, step int) error
 
 	walkFunc = func(ctx context.Context, s snapshots.Snapshotter, key string, step int) error {
-		c.log.Debugf("removing snapshots chain step %d", step)
+		logger.Debug("removing snapshots chain step %d", step)
 		sInfo, err := s.Stat(ctx, key)
 		if err != nil {
 			if errdefs.IsNotFound(err) {
-				c.log.Warnf("stopped walking chain, snapshot '%s' not found", key)
+				logger.Warning("stopped walking chain, snapshot '%s' not found", key)
 				return nil
 			}
 			return err
