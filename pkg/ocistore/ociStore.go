@@ -55,7 +55,6 @@ const (
 )
 
 type OCIStore struct {
-	log  logger.Logger
 	root string
 
 	// TODO create options to provide those
@@ -73,15 +72,11 @@ type OCIStore struct {
 	snaps map[string]snapshots.Snapshotter
 }
 
-func NewOCIStore(log logger.Logger, root string) *OCIStore {
+func NewOCIStore(root string) *OCIStore {
 	return &OCIStore{
 		root: root, driver: overlayDriver, namespace: namespace,
-		log: log, platform: platforms.DefaultStrict(),
+		platform: platforms.DefaultStrict(),
 	}
-}
-
-func (c OCIStore) Logger() logger.Logger {
-	return c.log
 }
 
 func (c *OCIStore) Init(mainCtx context.Context) error {
@@ -148,7 +143,7 @@ func (c *OCIStore) RunGarbageCollector() error {
 		return fmt.Errorf("failed to run garbage collection: %w", err)
 	}
 
-	c.log.Debugf("Garbage Collection complete. Elapsed time: %v\n", gcStats.Elapsed())
+	logger.Debug("Garbage Collection complete. Elapsed time: %v\n", gcStats.Elapsed())
 	return nil
 }
 

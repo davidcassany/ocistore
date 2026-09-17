@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"github.com/containerd/containerd/v2/core/images"
+	"github.com/davidcassany/ocistore/pkg/logger"
 	"github.com/davidcassany/ocistore/pkg/ocistore"
 	"github.com/spf13/cobra"
 )
@@ -45,7 +46,7 @@ var mountCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			cs.Logger().Infof("Createad mount from scratch with key: %s", key)
+			logger.Info("Createad mount from scratch with key: %s", key)
 			return nil
 		}
 
@@ -63,7 +64,7 @@ var mountCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		cs.Logger().Infof("Createad mount from '%s' with key: %s", img.Name, key)
+		logger.Info("Createad mount from '%s' with key: %s", img.Name, key)
 		return nil
 	},
 }

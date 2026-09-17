@@ -19,6 +19,7 @@ package cmd
 import (
 	"errors"
 
+	"github.com/davidcassany/ocistore/pkg/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -36,8 +37,6 @@ var umountCmd = &cobra.Command{
 		target := args[0]
 		var removeSnap int
 
-		log := cs.Logger()
-
 		if key == "" && (rmAllSnap || rmActiveSnap) {
 			return errors.New("snapshot key is required to delete snapshots")
 		}
@@ -52,7 +51,7 @@ var umountCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		log.Infof("Target '%s' unmounted", target)
+		logger.Info("Target '%s' unmounted", target)
 		return nil
 	},
 }

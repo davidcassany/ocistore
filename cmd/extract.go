@@ -20,6 +20,7 @@ import (
 	"context"
 
 	"github.com/davidcassany/ocistore/pkg/extractor"
+	"github.com/davidcassany/ocistore/pkg/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +28,11 @@ func initExtractorLogger(cmd *cobra.Command, args []string) error {
 	flags := cmd.Flags()
 	llvl, _ := flags.GetString("loglevel")
 	debug, _ := flags.GetBool("debug")
-	log = initLogger(debug, llvl)
+	if debug {
+		logger.SetLevel(logger.DebugLevel)
+	} else {
+		logger.SetLevel(logger.ParseLogLevel(llvl))
+	}
 	return nil
 }
 
@@ -46,7 +51,7 @@ var extractCmd = &cobra.Command{
 		skipTLS, _ := flags.GetBool("skip-tls")
 		delta, _ := flags.GetBool("delta")
 
-		extract := extractor.NewExtractor(context.Background(), log, extractor.WithDBPath(filedb), extractor.WithDelta(delta))
+		extract := extractor.NewExtractor(context.Background(), extractor.WithDBPath(filedb), extractor.WithDelta(delta))
 		_, err := extract.ExtractImage(ref, dst, "", false, !skipTLS)
 		return err
 	},

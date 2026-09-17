@@ -33,6 +33,7 @@ import (
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/containerd/v2/pkg/rootfs"
 	"github.com/containerd/errdefs"
+	"github.com/davidcassany/ocistore/pkg/logger"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/identity"
 	"github.com/opencontainers/image-spec/specs-go"
@@ -214,7 +215,7 @@ func (c *OCIStore) Commit(snapshotKey string, opts ...CommitImgOpt) (_ *images.I
 		return nil, err
 	}
 
-	c.log.Infof("Successfully committed image '%s'", img.Name)
+	logger.Info("Successfully committed image '%s'", img.Name)
 	// TODO should we run a snapshotter cleanup at this point?
 	return &img, nil
 }

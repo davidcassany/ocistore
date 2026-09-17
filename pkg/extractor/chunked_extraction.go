@@ -38,14 +38,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func createStructuralNodes(log logger.Logger, structure []*chunked.FileMetadata, target string, lCtx *layerCtx) (dirs []*chunked.FileMetadata, err error) {
+func createStructuralNodes(structure []*chunked.FileMetadata, target string, lCtx *layerCtx) (dirs []*chunked.FileMetadata, err error) {
 	var path string
 
 	// sort paths to ensure we are starting from parent directories
 	nodes := structure
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 
-	log.Debugf("starting the creation of structural nodes. %d items", len(structure))
+	logger.Debug("starting the creation of structural nodes. %d items", len(structure))
 
 	for _, n := range nodes {
 		path = filepath.Join(target, n.Name)
@@ -60,7 +60,7 @@ func createStructuralNodes(log logger.Logger, structure []*chunked.FileMetadata,
 		switch n.Type {
 		case chunked.TypeReg:
 			if n.Size != 0 {
-				log.Warnf("non zero 'reg' entry type found (%s) with size %d, treating it as an empty file", n.Name, n.Size)
+				logger.Warning("non zero 'reg' entry type found (%s) with size %d, treating it as an empty file", n.Name, n.Size)
 			}
 
 			flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
@@ -124,7 +124,7 @@ func createStructuralNodes(log logger.Logger, structure []*chunked.FileMetadata,
 				return nil, fmt.Errorf("creating the fifo file %s: %w", path, err)
 			}
 		case chunked.TypeChunk, chunked.TypeLink:
-			log.Warn("'chunk' or 'hardlink' entry type found in structural nodes list, ignoring it")
+			logger.Warning("'chunk' or 'hardlink' entry type found in structural nodes list, ignoring it")
 			continue
 		}
 		err = applyMetadata(path, n)
@@ -199,10 +199,10 @@ func resolveSymlink(baseDir, symlink, linkname string) string {
 	return filepath.Join(baseDir, linkname)
 }
 
-func fetchAndApplyBlobRanges(ctx context.Context, log logger.Logger, fetcher ocistore.RangeFetcher, layerDesc ocispec.Descriptor, root string, ranges []*byteRangeGroup) (err error) {
+func fetchAndApplyBlobRanges(ctx context.Context, fetcher ocistore.RangeFetcher, layerDesc ocispec.Descriptor, root string, ranges []*byteRangeGroup) (err error) {
 	var currentStreamPos int64
 
-	log.Debugf("starting to fecth coalesced ranges of the layer. %d items", len(ranges))
+	logger.Debug("starting to fecth coalesced ranges of the layer. %d items", len(ranges))
 
 	for _, blobRange := range ranges {
 		// fetch the range as a new compressed stream, the new compressed stream starts reading from position 0
@@ -230,7 +230,7 @@ func fetchAndApplyBlobRanges(ctx context.Context, log logger.Logger, fetcher oci
 				currentStreamPos += gap
 			}
 
-			err = decompressFile(log, rc, zstdFile, root)
+			err = decompressFile(rc, zstdFile, root)
 			if err != nil {
 				return fmt.Errorf("decompressing file (%s) from zstd:chunked file range: %w", zstdFile.Entry.Name, err)
 			}
@@ -242,7 +242,7 @@ func fetchAndApplyBlobRanges(ctx context.Context, log logger.Logger, fetcher oci
 	return nil
 }
 
-func decompressFile(log logger.Logger, r io.Reader, zstdFile *tocFile, root string) (err error) {
+func decompressFile(r io.Reader, zstdFile *tocFile, root string) (err error) {
 	path := filepath.Join(root, zstdFile.Entry.Name)
 
 	// remove target file if already exists and recreate it as an empty file
@@ -279,7 +279,7 @@ func decompressFile(log logger.Logger, r io.Reader, zstdFile *tocFile, root stri
 	// limit the copy to skip tar headers
 	written, err := io.CopyN(outFile, decompressedStream, zstdFile.Entry.Size)
 	if written != zstdFile.Entry.Size {
-		log.Warnf("written bytes (%d) not matching expected size (%d)", written, zstdFile.Entry.Size)
+		logger.Warning("written bytes (%d) not matching expected size (%d)", written, zstdFile.Entry.Size)
 	}
 	if err != nil {
 		return fmt.Errorf("writing bytes for file %s: %w", zstdFile.Entry.Name, err)
@@ -287,7 +287,7 @@ func decompressFile(log logger.Logger, r io.Reader, zstdFile *tocFile, root stri
 	// discard tar headers
 	_, err = io.Copy(io.Discard, decompressedStream)
 	if errors.Is(err, io.ErrUnexpectedEOF) {
-		log.Debugf("Unexpected EOF when discarting bytes from uncompressed stream: %s", err.Error())
+		logger.Debug("Unexpected EOF when discarting bytes from uncompressed stream: %s", err.Error())
 		return err
 	}
 	if err != nil {
@@ -304,12 +304,12 @@ func decompressFile(log logger.Logger, r io.Reader, zstdFile *tocFile, root stri
 	return nil
 }
 
-func applyCachedFiles(log logger.Logger, cachedFiles []*tocFile, root string) error {
-	log.Debugf("starting to feed extracted target with cached files. %d items", len(cachedFiles))
+func applyCachedFiles(cachedFiles []*tocFile, root string) error {
+	logger.Debug("starting to feed extracted target with cached files. %d items", len(cachedFiles))
 
 	for _, tFile := range cachedFiles {
 		if len(tFile.CachedPaths) == 0 {
-			log.Warnf("ignoring %q as it does not have cached paths", tFile.Entry.Name)
+			logger.Warning("ignoring %q as it does not have cached paths", tFile.Entry.Name)
 			continue
 		}
 		target := filepath.Join(root, tFile.Entry.Name)
@@ -317,7 +317,7 @@ func applyCachedFiles(log logger.Logger, cachedFiles []*tocFile, root string) er
 		for _, cPath := range tFile.CachedPaths {
 			err = reflinkOrCopy(target, cPath, tFile.Entry)
 			if err != nil {
-				log.Warnf("error copying cached path %q to %q", cPath, target)
+				logger.Warning("error copying cached path %q to %q", cPath, target)
 			}
 		}
 		if err != nil {
@@ -402,7 +402,7 @@ func reflinkOrCopy(target, source string, entry *chunked.FileMetadata) (err erro
 	return nil
 }
 
-func applyDirPerm(log logger.Logger, dirs []*chunked.FileMetadata, root string) error {
+func applyDirPerm(dirs []*chunked.FileMetadata, root string) error {
 	var path string
 	var err error
 
@@ -414,12 +414,12 @@ func applyDirPerm(log logger.Logger, dirs []*chunked.FileMetadata, root string) 
 		return cmp.Compare(b.Name, a.Name)
 	})
 
-	log.Debugf("starting to apply directory permissions. %d items", len(dirs))
+	logger.Debug("starting to apply directory permissions. %d items", len(dirs))
 
 	for _, d := range dirs {
 		path = filepath.Join(root, d.Name)
 		if d.Type != chunked.TypeDir {
-			log.Warnf("found file of type %s (%s) in dirs list, ignoring it", d.Type, path)
+			logger.Warning("found file of type %s (%s) in dirs list, ignoring it", d.Type, path)
 			continue
 		}
 		err = applyMetadata(path, d)
@@ -447,31 +447,31 @@ func updateFileDB(db *filedb.DB, stagingID string, pToc *processedTOC) error {
 }
 
 func fetchAndApplyDeltaLayer(
-	ctx context.Context, log logger.Logger, fetcher ocistore.RangeFetcher, db *filedb.DB,
+	ctx context.Context, fetcher ocistore.RangeFetcher, db *filedb.DB,
 	toc *chunked.TOC, layerDesc ocispec.Descriptor, destination string, lCtx *layerCtx,
 ) error {
 
-	pToc, err := processTOC(log, db, toc, lCtx, destination)
+	pToc, err := processTOC(db, toc, lCtx, destination)
 	if err != nil {
 		return fmt.Errorf("processing Table of Contents (ToC): %w", err)
 	}
 
-	dirs, err := createStructuralNodes(log, pToc.structure, destination, lCtx)
+	dirs, err := createStructuralNodes(pToc.structure, destination, lCtx)
 	if err != nil {
 		return fmt.Errorf("creating structural nodes: %w", err)
 	}
 
-	err = fetchAndApplyBlobRanges(ctx, log, fetcher, layerDesc, destination, groupMissingFiles(pToc.missingFiles))
+	err = fetchAndApplyBlobRanges(ctx, fetcher, layerDesc, destination, groupMissingFiles(pToc.missingFiles))
 	if err != nil {
 		return fmt.Errorf("extracting specific missing ranges: %w", err)
 	}
 
-	err = applyCachedFiles(log, pToc.cachedFiles, destination)
+	err = applyCachedFiles(pToc.cachedFiles, destination)
 	if err != nil {
 		return fmt.Errorf("applying cached files: %w", err)
 	}
 
-	err = applyDirPerm(log, dirs, destination)
+	err = applyDirPerm(dirs, destination)
 	if err != nil {
 		return fmt.Errorf("applying metadata to directories: %w", err)
 	}

@@ -51,7 +51,6 @@ const (
 
 type Extractor struct {
 	ctx        context.Context
-	log        logger.Logger
 	platform   platforms.MatchComparer
 	fileDbPath string
 	delta      bool
@@ -71,9 +70,8 @@ func WithDelta(delta bool) ExtractorOpt {
 	}
 }
 
-func NewExtractor(ctx context.Context, log logger.Logger, opts ...ExtractorOpt) *Extractor {
+func NewExtractor(ctx context.Context, opts ...ExtractorOpt) *Extractor {
 	e := &Extractor{
-		log:        log,
 		platform:   platforms.DefaultStrict(),
 		ctx:        ctx,
 		fileDbPath: DefaultDBPath,
@@ -147,14 +145,14 @@ func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local
 		return "", fmt.Errorf("creating destination directory: %w", err)
 	}
 
-	e.log.Debugf("Extracting image to %s", destination)
+	logger.Debug("Extracting image to %s", destination)
 
 	// TODO check if it handles authorization
 	resolver := ocistore.SetupOCIRegistryResolver(verify, nil)
 
 	name, desc, err := resolver.Resolve(e.ctx, imageRef)
 	if err != nil {
-		e.log.Errorf("failed resolving image reference into a name and OCI descriptor: %v", err)
+		logger.Error("failed resolving image reference into a name and OCI descriptor: %v", err)
 		return "", err
 	}
 
@@ -169,7 +167,7 @@ func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local
 	)
 
 	handler = images.Handlers(images.FilterPlatforms(
-		fetchManifestAndConfig(e.log, fetcher, &imgMeta),
+		fetchManifestAndConfig(fetcher, &imgMeta),
 		e.platform),
 	)
 
@@ -208,17 +206,17 @@ func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local
 		if e.delta {
 			toc, err = ocistore.FetchToC(e.ctx, fetcher, layerDesc)
 			if err != nil {
-				e.log.Warnf("could not extract ToC: %s. Fallback to regular extraction", err.Error())
+				logger.Warning("could not extract ToC: %s. Fallback to regular extraction", err.Error())
 			}
 		}
 
 		if toc == nil {
-			err = fetchAndApplyLayer(e.ctx, e.log, fetcher, layerDesc, destination, lCtx)
+			err = fetchAndApplyLayer(e.ctx, fetcher, layerDesc, destination, lCtx)
 			if err != nil {
 				return "", err
 			}
 		} else {
-			err = fetchAndApplyDeltaLayer(e.ctx, e.log, fetcher, db, toc, layerDesc, destination, lCtx)
+			err = fetchAndApplyDeltaLayer(e.ctx, fetcher, db, toc, layerDesc, destination, lCtx)
 			if err != nil {
 				return "", err
 			}
@@ -259,15 +257,15 @@ func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local
 	return digest, nil
 }
 
-func fetchAndApplyLayer(ctx context.Context, log logger.Logger, fetcher remotes.Fetcher, layer ocispec.Descriptor, destination string, lCtx *layerCtx) error {
-	log.Debugf("starting to fetch layer stream")
+func fetchAndApplyLayer(ctx context.Context, fetcher remotes.Fetcher, layer ocispec.Descriptor, destination string, lCtx *layerCtx) error {
+	logger.Debug("starting to fetch layer stream")
 
 	rc, err := fetcher.Fetch(ctx, layer)
 	if err != nil {
 		return fmt.Errorf("failed to fetch layer %s: %w", layer.Digest, err)
 	}
 
-	log.Debugf("decompressing layer stream")
+	logger.Debug("decompressing layer stream")
 
 	uncompressedStream, err := compression.DecompressStream(rc)
 	if err != nil {
@@ -279,7 +277,7 @@ func fetchAndApplyLayer(ctx context.Context, log logger.Logger, fetcher remotes.
 		archive.WithFilter(filterFunc(destination, lCtx)),
 	}
 
-	log.Debug("applying uncompressed stream")
+	logger.Debug("applying uncompressed stream")
 
 	_, err = archive.Apply(ctx, destination, uncompressedStream, opts...)
 	err = errors.Join(err, uncompressedStream.Close(), rc.Close())
@@ -408,7 +406,7 @@ func ensureSafePath(baseDir, targetPath string) error {
 	return nil
 }
 
-func fetchManifestAndConfig(log logger.Logger, fetcher remotes.Fetcher, metadata *metadata) images.HandlerFunc {
+func fetchManifestAndConfig(fetcher remotes.Fetcher, metadata *metadata) images.HandlerFunc {
 	return func(ctx context.Context, desc ocispec.Descriptor) ([]ocispec.Descriptor, error) {
 		switch {
 		case images.IsDockerType(desc.MediaType):
@@ -422,7 +420,7 @@ func fetchManifestAndConfig(log logger.Logger, fetcher remotes.Fetcher, metadata
 			if err := json.Unmarshal(metadataBytes, &index); err != nil {
 				return nil, fmt.Errorf("unmarshalling index error: %w", err)
 			}
-			log.Debugf("Fetched index manifest with digest: %s", desc.Digest)
+			logger.Debug("Fetched index manifest with digest: %s", desc.Digest)
 			return append([]ocispec.Descriptor{}, index.Manifests...), nil
 		case images.IsManifestType(desc.MediaType):
 			if metadata.mfst != nil {
@@ -439,7 +437,7 @@ func fetchManifestAndConfig(log logger.Logger, fetcher remotes.Fetcher, metadata
 			}
 			metadata.mfst = &manifest
 
-			log.Debugf("Fetched image manifest with digest: %s", desc.Digest)
+			logger.Debug("Fetched image manifest with digest: %s", desc.Digest)
 			return append([]ocispec.Descriptor{manifest.Config}, manifest.Layers...), nil
 		case images.IsConfigType(desc.MediaType):
 			if metadata.conf != nil {
@@ -457,12 +455,12 @@ func fetchManifestAndConfig(log logger.Logger, fetcher remotes.Fetcher, metadata
 			}
 
 			metadata.conf = &config
-			log.Debugf("Fetched image config with digest: %s", desc.Digest)
+			logger.Debug("Fetched image config with digest: %s", desc.Digest)
 			return nil, nil
 		case images.IsLayerType(desc.MediaType):
-			log.Debugf("encountered a layer type, not fetching it")
+			logger.Debug("encountered a layer type, not fetching it")
 		default:
-			log.Debugf("encountered unknown type %v; children may not be fetched", desc.MediaType)
+			logger.Debug("encountered unknown type %v; children may not be fetched", desc.MediaType)
 		}
 		return nil, nil
 	}

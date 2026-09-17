@@ -25,6 +25,7 @@ import (
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/errdefs"
+	"github.com/davidcassany/ocistore/pkg/logger"
 	"github.com/opencontainers/image-spec/identity"
 )
 
@@ -33,12 +34,12 @@ func (c *OCIStore) Get(ctx context.Context, ref string) (*images.Image, error) {
 		return nil, errors.New(missInitErrMsg)
 	}
 
-	c.log.Debugf("Looking for image %q in image store", ref)
+	logger.Debug("Looking for image %q in image store", ref)
 	img, err := c.is.Get(ctx, ref)
 	if err != nil {
 		return nil, fmt.Errorf("getting image '%s' from store: %w", ref, err)
 	}
-	c.log.Infof("Image %q found", ref)
+	logger.Info("Image %q found", ref)
 	return &img, nil
 }
 
@@ -77,23 +78,23 @@ func (c *OCIStore) Delete(name string, opts ...images.DeleteOpt) (retErr error) 
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to delete image: %v", err)
+		logger.Error("failed to create lease to delete image: %v", err)
 		return err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on delete image operation")
+			logger.Warning("could not remove lease on delete image operation")
 		}
 	}()
 
 	err = c.delete(ctx, name, opts...)
 	if err != nil {
-		c.log.Errorf("failed deleting image '%s': %v", name, err)
+		logger.Error("failed deleting image '%s': %v", name, err)
 		return err
 	}
 
-	c.log.Infof("Successfully deleted image '%s'", name)
+	logger.Info("Successfully deleted image '%s'", name)
 	return nil
 }
 
@@ -104,13 +105,13 @@ func (c *OCIStore) Update(img images.Image, fieldpaths ...string) (i images.Imag
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to update image: %v", err)
+		logger.Error("failed to create lease to update image: %v", err)
 		return i, err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on update image operation")
+			logger.Warning("could not remove lease on update image operation")
 		}
 	}()
 
@@ -124,13 +125,13 @@ func (c *OCIStore) Create(img images.Image) (i images.Image, retErr error) {
 
 	ctx, done, err := c.WithLease(leases.WithRandomID(), leases.WithExpiration(1*time.Hour))
 	if err != nil {
-		c.log.Errorf("failed to create lease to create image: %v", err)
+		logger.Error("failed to create lease to create image: %v", err)
 		return i, err
 	}
 	defer func() {
 		err = done(ctx)
 		if err != nil && retErr == nil {
-			c.log.Warnf("could not remove lease on create image operation")
+			logger.Warning("could not remove lease on create image operation")
 		}
 	}()
 

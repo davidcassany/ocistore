@@ -17,50 +17,90 @@ limitations under the License.
 package logger
 
 import (
-	"io"
+	"sync"
 
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
 
-var _ Logger = (*logWrapper)(nil)
+type LogLevel int
 
 const (
-	DebugLevel = "debug"
-	InfoLevel  = "info"
-	ErrorLevel = "error"
-	WarnLevel  = "warn"
+	DebugLevel LogLevel = iota
+	InfoLevel
+	WarningLevel
+	ErrorLevel
 )
 
-type Logger interface {
-	Info(...interface{})
-	Warn(...interface{})
-	Debug(...interface{})
-	Error(...interface{})
-	Fatal(...interface{})
-	Panic(...interface{})
-	Trace(...interface{})
-	Infof(string, ...interface{})
-	Warnf(string, ...interface{})
-	Debugf(string, ...interface{})
-	Errorf(string, ...interface{})
-	Fatalf(string, ...interface{})
-	Panicf(string, ...interface{})
-	Tracef(string, ...interface{})
-
-	SetOutput(io.Writer)
-}
-
-type logWrapper struct {
-	*log.Logger
-}
-
-func NewLogger(level string) (Logger, error) {
-	l := log.New()
-	lvl, err := log.ParseLevel(level)
-
-	if err != nil {
-		return l, err
+func ParseLogLevel(level string) LogLevel {
+	switch level {
+	case "debug":
+		return DebugLevel
+	case "info":
+		return InfoLevel
+	case "warn":
+		return WarningLevel
+	case "error":
+		return ErrorLevel
+	default:
+		return InfoLevel
 	}
-	l.SetLevel(lvl)
-	return l, nil
+}
+
+type singletonLogger struct {
+	logger *logrus.Logger
+}
+
+var (
+	instance *singletonLogger
+	once     sync.Once
+)
+
+// getInstance ensures the logger is initialized only once
+func getInstance() *singletonLogger {
+	once.Do(func() {
+		l := logrus.New()
+
+		// Configure logrus default settings
+		l.SetFormatter(&logrus.TextFormatter{
+			FullTimestamp:   true,
+			TimestampFormat: "2006/01/02 15:04:05",
+		})
+		l.SetLevel(logrus.InfoLevel) // Default level
+
+		instance = &singletonLogger{
+			logger: l,
+		}
+	})
+	return instance
+}
+
+// SetLevel updates the verbosity level
+func SetLevel(level LogLevel) {
+	inst := getInstance()
+	switch level {
+	case DebugLevel:
+		inst.logger.SetLevel(logrus.DebugLevel)
+	case InfoLevel:
+		inst.logger.SetLevel(logrus.InfoLevel)
+	case WarningLevel:
+		inst.logger.SetLevel(logrus.WarnLevel)
+	case ErrorLevel:
+		inst.logger.SetLevel(logrus.ErrorLevel)
+	}
+}
+
+func Debug(format string, v ...any) {
+	getInstance().logger.Debugf(format, v...)
+}
+
+func Info(format string, v ...any) {
+	getInstance().logger.Infof(format, v...)
+}
+
+func Warning(format string, v ...any) {
+	getInstance().logger.Warnf(format, v...)
+}
+
+func Error(format string, v ...any) {
+	getInstance().logger.Errorf(format, v...)
 }

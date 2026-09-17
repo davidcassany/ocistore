@@ -27,6 +27,7 @@ import (
 	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/containerd/v2/core/unpack"
+	"github.com/davidcassany/ocistore/pkg/logger"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -60,7 +61,7 @@ func (c *OCIStore) Unpack(ref string, opts ...ApplyCommitOpt) (err error) {
 		return c.unpack(ctx, img, opts...)
 	}
 
-	c.log.Infof("Image %q already unpacked, nothing to do", ref)
+	logger.Info("Image %q already unpacked, nothing to do", ref)
 	return nil
 }
 
@@ -105,7 +106,7 @@ func (c *OCIStore) unpack(ctx context.Context, img *images.Image, opts ...ApplyC
 			unpacker.Wait()
 		}
 		if errors.Is(images.ErrEmptyWalk, err) {
-			c.log.Warnf("there are no children to unpack")
+			logger.Warning("there are no children to unpack")
 			return nil
 		}
 
