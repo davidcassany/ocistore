@@ -60,23 +60,60 @@ To build a `zstd:chunked` image, push with:
 podman push --compression-format zstd:chunked <image-ref>
 ```
 
-### Test Images
+### Test Image
 
-A pair of test images (`l1`, `l2`) are published via [openSUSE Build Service](https://build.opensuse.org/package/show/home:dcassany:Tumbleweed:containers:zstd:chunked/tumbleweed-test-containers):
+A test image (`test/multilayer:latest`) is published at [openSUSE Build Service](https://build.opensuse.org/package/show/home:dcassany:containers/extractiontest-image).
+It is an image based on bci/bci-micro which adds a couple of additional layers to test some extraction cases:
+
+* File type transitions across layers: directory -> file, directory -> symlink and file- > directory
+* Attribute mutation
+* Extraction of devices
+* Hardlinks management when the source is whiteout
+* Whiteouts and opaques
+* Download duplicated files from the same image only once regardless of being present in the same layer or a different one
+
+To extract the image and test delta download:
 
 ```bash
-# Extract "l1" — openSUSE Tumbleweed base with an extra layer
+# Extract the base image - it will populate the cached files database
 sudo ocistore --debug extract \
-  registry.opensuse.org/home/dcassany/tumbleweed/containers/zstd/chunked/containers/opensuse/tumbleweed/chunked:l1 \
-  ./extractions/l1
+  registry.opensuse.org/home/dcassany/containers/zstd-chunked/test/base:latest \
+  ./extractions/base
 
-# Extract "l2" — built on top of "l1"; observe the delta download
+# Extract test/multilayer:latest — built on top of the previous one and observe the
+# delta download only the files from top layers will be downloaded
 sudo ocistore --debug extract \
-  registry.opensuse.org/home/dcassany/tumbleweed/containers/zstd/chunked/containers/opensuse/tumbleweed/chunked:l2 \
-  ./extractions/l2
+  registry.opensuse.org/home/dcassany/containers/zstd-chunked/test/multilayer:latest \
+  ./extractions/partially_cached
+
+# Extract test/multilayer:latest again to verify it only fetches the ToC and no file
+# is identified as a miss
+sudo ocistore --debug extract \
+  registry.opensuse.org/home/dcassany/containers/zstd-chunked/test/multilayer:latest \
+  ./extractions/fully_cached
 ```
 
-Run `l1` first, then `l2` to see the delta fetch in action.
+#### Verify extracted images
+
+To verify the extracted image `skopeo`, `umoci` and `mtree` can be used to confirm the extraction is valid.
+
+```bash
+# extract the remote image filesystem using skopeo and umoci
+skopeo copy \
+  docker://registry.opensuse.org/home/dcassany/containers/zstd-chunked/test/multilayer:latest \
+  oci:.extractions/multilayer_oci_image:latest
+
+sudo umoci unpack --image ./extractions/multilayer_oci_image:latest ./extractions/reference
+
+# Create an mtree report of the extracted image to validate extractions done with the
+# ocistore utility
+sudo mtree -c -p ./extractions/reference/rootfs \
+  -k uid,gid,mode,size,type,link,sha256 > ./extractions/validation.mtree
+
+# Validate partial and fully cached extractions
+sudo mtree -f ./extractions/validation.mtree -p ./extractions/partially_cached
+sudo mtree -f ./extractions/validation.mtree -p ./extractions/fully_cached
+```
 
 ## License
 
