@@ -3,9 +3,13 @@
 A daemonless OCI image storage library and CLI built on the [containerd v2](https://github.com/containerd/containerd)
 stack — no containerd daemon required.
 
-Born as a playground within the [Elemental Toolkit](https://github.com/rancher/elemental-toolkit) project, OCIStore
+Born in the context of [Elemental Toolkit](https://github.com/rancher/elemental-toolkit) project, OCIStore
 explores OCI image handling and, in particular, efficient extraction of `zstd:chunked` images into a single flattened
-filesystem using delta fetches. It relies on Podman's `zstd:chunked` format for delta extraction.
+filesystem using delta fetches. It relies on Podman's `zstd:chunked` format for delta extraction. It also serves as a
+hands-on playground for learning and exploring the [containerd](https://github.com/containerd/containerd) codebase.
+
+> **Note:** This project is intended for experimentation and running proof of concepts. It is not meant to be
+> production-ready code and should not be used as such.
 
 ## Build
 
