@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"uuid"
 
 	"github.com/containerd/containerd/v2/core/images"
@@ -135,6 +136,8 @@ func (lc *layerCtx) applyOpaques() {
 type hardlinks map[string][]string
 
 func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local bool, verify bool) (_ string, err error) {
+	start := time.Now()
+
 	destination, err = filepath.Abs(destination)
 	if err != nil {
 		return "", fmt.Errorf("cannot set destination %q as an absolute path: %w", destination, err)
@@ -253,6 +256,8 @@ func (e Extractor) ExtractImage(imageRef, destination, platformRef string, local
 			}
 		}
 	}
+
+	logger.Info("Extraction finished in %v", time.Since(start))
 
 	return digest, nil
 }

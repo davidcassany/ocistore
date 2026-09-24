@@ -375,18 +375,13 @@ func reflinkOrCopy(target, source string, entry *chunked.FileMetadata) (err erro
 				return fmt.Errorf("seeking file %s before copying: %w", source, err)
 			}
 
+			logger.Debug("reflink for %q not possible, attempting a copy", target)
 			if _, copyErr := io.Copy(dst, src); copyErr != nil {
 				return fmt.Errorf("copying %s to %s: %w", source, target, err)
 			}
 		} else {
 			return fmt.Errorf("reflinking from %s to %s: %w", source, target, err)
 		}
-	}
-
-	// Sync to ensure durability
-	err = dst.Sync()
-	if err != nil {
-		return fmt.Errorf("synching target file %s: %w", target, err)
 	}
 
 	err = dst.Close()
