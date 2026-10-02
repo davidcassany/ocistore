@@ -3,7 +3,7 @@ module github.com/davidcassany/ocistore
 go 1.27
 
 require (
-	github.com/containerd/containerd/v2 v2.4.0
+	github.com/containerd/containerd/v2 v2.4.1
 	github.com/containerd/errdefs v1.0.0
 	github.com/containerd/platforms v1.0.0-rc.5
 	github.com/klauspost/compress v1.20.0
